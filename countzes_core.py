@@ -928,6 +928,8 @@ def compute_clip_similarity_map(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
         )
+        if hasattr(text_outputs, "pooler_output"):
+            text_outputs = text_outputs.pooler_output
         patch_embeds = clip_model.visual_projection(patch_embeds)
     patch_embeds = patch_embeds / patch_embeds.norm(dim=-1, keepdim=True)
     text_emb = text_outputs / text_outputs.norm(dim=-1, keepdim=True)
