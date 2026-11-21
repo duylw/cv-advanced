@@ -313,6 +313,7 @@ def run_countzes_on_image(
     class_name: str,
     models: Dict[str, object],
     args,
+    return_debug: bool = False,
 ):
     """Run the 3-stage CountZES pipeline (DAE -> DGE -> FCE) on one image."""
     device = models["device"]
@@ -380,10 +381,11 @@ def run_countzes_on_image(
     ]
     best_index = valid_indices[int(np.argmax(scores))]
     bbox_coord = detections.xyxy[best_index]
+    initial_box = [int(v) for v in bbox_coord]
 
     invert_sim = not args.fix_sses_inversion
     _restore_sam_cache(predictor, sam_cache)
-    dae, _, _ = SSES(
+    dae, dae_mask, _ = SSES(
         test_image,
         bbox_coord,
         predictor,
@@ -408,7 +410,7 @@ def run_countzes_on_image(
 
     if len(detections.xyxy) == 1:
         _restore_sam_cache(predictor, sam_cache)
-        dae, _, _ = SSES(
+        dae, dae_mask_refined, _ = SSES(
             test_image,
             bbox_coord,
             predictor,
@@ -428,6 +430,8 @@ def run_countzes_on_image(
         )
         if dae is not None:
             bbox_coord = dae
+        if dae_mask_refined is not None:
+            dae_mask = dae_mask_refined
 
     x0, y0, x1, y1 = _clamp_box_xyxy(bbox_coord, W, H)
     dae = [x0, y0, x1, y1]
@@ -436,9 +440,10 @@ def run_countzes_on_image(
     # Stage 2: Density Guided Exemplar (DGE)
     # ==================================================
     ori_boxes = [[y0, x0, y1, x1]]
-    _, _, density_pred, density_raw = _run_counter(
+    _, count_stage2, density_pred, density_raw = _run_counter(
         args.fsoc, counter_model, src_img, image_path, ori_boxes, filename, device
     )
+    density_stage2 = density_pred.copy() if return_debug else None
 
     threshold = density_pred.mean() + 2 * density_pred.std()
     peaks = peak_local_max(density_pred, min_distance=5, threshold_abs=threshold)
@@ -497,10 +502,11 @@ def run_countzes_on_image(
     dge = [x0, y0, x1, y1]
     dge_box = [[y0, x0, y1, x1]]
 
-    _ = _compute_sam_sim_up(predictor, sam_cache, test_image, dge)
-    _, _, density_pred, density_raw = _run_counter(
+    sim_up_dge = _compute_sam_sim_up(predictor, sam_cache, test_image, dge)
+    _, count_stage3, density_pred, density_raw = _run_counter(
         args.fsoc, counter_model, src_img, image_path, dge_box, filename, device
     )
+    density_stage3 = density_pred.copy() if return_debug else None
 
     threshold = density_pred.mean() + 2 * density_pred.std()
     peaks2 = peak_local_max(density_pred, min_distance=5, threshold_abs=threshold)
@@ -568,6 +574,7 @@ def run_countzes_on_image(
         vecs = torch.stack([box_to_featvec(b) for b in single_instance_boxes])
     if vecs.shape[0] == 1:
         fce = single_instance_boxes[0]
+        kmeans_labels = [0]
     else:
         c0_idx = 0
         c1_idx = int(torch.argmin(vecs @ vecs[c0_idx]))
@@ -595,18 +602,52 @@ def run_countzes_on_image(
         maj_idx = (labels == majority).nonzero(as_tuple=False).squeeze(1)
         sims_to_centroid = vecs[maj_idx] @ centroids[majority]
         fce = single_instance_boxes[int(maj_idx[int(torch.argmax(sims_to_centroid))])]
+        kmeans_labels = labels.detach().cpu().tolist()
 
     # Final counting with [dae, dge, fce]
+    fce = [int(v) for v in fce]
     boxes = [dae, dge, fce]
     ori_boxes = [[int(b[1]), int(b[0]), int(b[3]), int(b[2])] for b in map(np.array, boxes)]
     vis_output, count, _, _ = _run_counter(
         args.fsoc, counter_model, src_img, image_path, ori_boxes, filename, device
     )
 
+    debug_info = None
+    if return_debug:
+        debug_info = {
+            "img_rgb": test_image,
+            "sim_clip": sim_clip,
+            "gdino_boxes": detections.xyxy.tolist(),
+            "gdino_confs": detections.confidence.tolist(),
+            "initial_box": initial_box,
+            "dae_mask": dae_mask,
+            "dae": dae,
+            "sim_up_dae": sim_up,
+            "density_stage2": density_stage2,
+            "count_stage2": count_stage2,
+            "point_prompts_stage2": point_prompts,
+            "box_list_stage2": box_list,
+            "single_instance_boxes1": single_instance_boxes1,
+            "sam_box_count": sam_box_count,
+            "pseudo_gt_count": pseudo_gt_count,
+            "dge": [int(v) for v in dge],
+            "sim_up_dge": sim_up_dge,
+            "density_stage3": density_stage3,
+            "count_stage3": count_stage3,
+            "point_prompts_stage3": point_prompts2,
+            "filtered_boxes": filtered_boxes,
+            "single_instance_boxes": single_instance_boxes,
+            "kmeans_labels": kmeans_labels,
+            "fce": fce,
+            "final_count": count,
+        }
+
     del hr_features, lr_features, full_feat, hr_image, sam_cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    if return_debug:
+        return vis_output, count, debug_info
     return vis_output, count
 
 
