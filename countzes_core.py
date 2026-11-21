@@ -3,8 +3,14 @@
 import argparse
 import math
 import os
+import sys
 import warnings
 from typing import Dict, List, Optional, Tuple
+
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_GDINO_ROOT = os.path.join(_REPO_ROOT, "GroundingDINO")
+if _GDINO_ROOT not in sys.path:
+    sys.path.insert(0, _GDINO_ROOT)
 
 import cv2
 import matplotlib.pyplot as plt
@@ -25,7 +31,7 @@ from DSALVANet.utils.data_preprocess import preprocess
 from DSALVANet.utils.fsol_modules import vis_DSALVANet
 from DSALVANet.utils.model_helper import build_model
 from DSALVANet.utils.PerSense_countr import vis_countr
-from GroundingDINO.groundingdino.util.inference import Model
+from groundingdino.util.inference import Model
 from per_segment_anything import SamPredictor, sam_model_registry
 
 
