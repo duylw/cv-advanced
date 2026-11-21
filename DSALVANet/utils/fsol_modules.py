@@ -6,7 +6,7 @@ import math
 import os
 
 def apply_scoremap(image, scoremap, alpha=0.5):
-        np_image = np.asarray(image, dtype=np.float)
+        np_image = np.asarray(image, dtype=float)
         scoremap = (scoremap * 255).astype(np.uint8)
         scoremap = cv2.applyColorMap(scoremap, cv2.COLORMAP_JET)
         scoremap = cv2.cvtColor(scoremap, cv2.COLOR_BGR2RGB)
@@ -28,7 +28,7 @@ def vis_DSALVANet(src_img, boxes, model_output, test_idx):
         density_pred = density_pred.permute(1, 2, 0)  # c x h x w -> h x w x c
         density_pred = density_pred.cpu().detach().numpy()
         density_pred = cv2.resize(density_pred, (w_orig, h_orig))
-        density_pred = (density_pred - density_pred.min()) / (density_pred.max() - density_pred.min())
+        density_pred = (density_pred - density_pred.min()) / (density_pred.max() - density_pred.min() + 1e-8)
         density_pred= np.stack((density_pred,) * 3, axis=-1)
 
 

@@ -40,7 +40,8 @@ Input: (Ảnh RGB, Tên class text)
 
 | Thành phần | Đường dẫn | Vai trò |
 | :--- | :--- | :--- |
-| **Entry scripts (5 datasets)** | `countzes_fsc147.py`, `countzes_carpk.py`, `countzes_persense_D.py`, `countzes_mbm.py`, `countzes_vgg.py` | Chạy đánh giá toàn bộ pipeline trên từng dataset. Hiện đang sao chép logic pipeline ở cả 5 file. |
+| **Shared Pipeline Core** | `countzes_core.py` | Chứa logic dùng chung: unified `argparse`, load models, cache SAM feature, Stage 1–3 (`DAE`→`DGE`→`FCE`) và tính metric. |
+| **Entry scripts (5 datasets)** | `countzes_fsc147.py`, `countzes_carpk.py`, `countzes_persense_D.py`, `countzes_mbm.py`, `countzes_vgg.py` | Entrypoint đọc dữ liệu riêng của từng benchmark và gọi `countzes_core.py`. |
 | **Visualization helper** | `show.py` | Hàm vẽ mask, point, bbox cho matplotlib. |
 | **DSALVANet** | `DSALVANet/models/DSALVANet.py` | Counter gồm `ResNet` (ResNet-50 `out_layers=[1,2,3]`), `DSAMMultiBlock` (với `MDM` dùng `deform_conv2d`), `LVAM`, `Regressor`. |
 | **DSALVANet Utils** | `DSALVANet/utils/` | `model_helper.py` (load model), `data_preprocess.py` (resize 512x512 & pad đủ 3 box), `fsol_modules.py` (`vis_DSALVANet`), `PerSense_countr.py` (`vis_countr`). |

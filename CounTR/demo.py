@@ -63,11 +63,12 @@ def load_image(test_image_path, ori_boxes):
         x1, y1, x2, y2 = map(int, box)
         bboxes.append([[y1, x1], [y2, x2]])
 
+    _, img_h, img_w = image.shape
     for bbox in bboxes:
-        x1 = int(bbox[0][0] * scale_factor_W)
-        y1 = int(bbox[0][1] * scale_factor_H)
-        x2 = int(bbox[1][0] * scale_factor_W)
-        y2 = int(bbox[1][1] * scale_factor_H)
+        x1 = max(0, min(img_w - 1, int(bbox[0][0] * scale_factor_W)))
+        y1 = max(0, min(img_h - 1, int(bbox[0][1] * scale_factor_H)))
+        x2 = max(x1, min(img_w - 1, int(bbox[1][0] * scale_factor_W)))
+        y2 = max(y1, min(img_h - 1, int(bbox[1][1] * scale_factor_H)))
         rects.append([y1, x1, y2, x2])
         # bbox = image[:, y1:y2, x1:x2]
         bbox = image[:, y1:y2 + 1, x1:x2 + 1]

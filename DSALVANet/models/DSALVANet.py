@@ -260,7 +260,7 @@ class MDM(nn.Module):
             init_mask = torch.Tensor(torch.zeros([self.offset_groups*self.kernel_size**2,self.in_channels,self.kernel_size,self.kernel_size])) + 0.5
             self.conv_mask.weight = torch.nn.Parameter(init_mask)   
         if self.with_bias != False:
-            self.bias = torch.Tensor(torch.zeros(self.out_channels))
+            self.bias = nn.Parameter(torch.zeros(self.out_channels))
         else:self.bias = None
 
     def forward(self,x, conv_kernel):
@@ -322,7 +322,7 @@ class LVAM(nn.Module):
             std = torch.exp(logvar.mul(0.5))
             epsilons = []
             for i in range(self.sample_times): 
-                epsilon = torch.randn_like(std).cuda()                
+                epsilon = torch.randn_like(std)                
                 epsilons.append(epsilon.mul(std).add_(mu))
             epsilons = torch.concat(epsilons,dim=0)
             return epsilons

@@ -151,24 +151,17 @@ class SupervisedMAE(nn.Module):
         return x
 
     def forward_decoder(self, x, y_, shot_num = 5):
-        # embed tokens
-        with open("./DSALVANet/test_data/bbox.txt", "r") as file:
-            lines = file.readlines()
-            line_count = len(lines)
-
-        if line_count <= 5:
-            shot_num = line_count
-        else:
-            shot_num = 5
+        # Derive effective shot count from exemplar tensor instead of reading bbox.txt
+        shot_num = min(shot_num, y_.shape[1], 5) if y_.ndim >= 2 else 0
         x = self.decoder_embed(x)
         # add pos embed
         x = x + self.decoder_pos_embed
 
         # Exemplar encoder
-        y_ = y_.transpose(0,1) # y_ [N,3,3,64,64]->[3,N,3,64,64]
+        y_ = y_.transpose(0,1) # y_ [N,num_shots,3,64,64]->[num_shots,N,3,64,64]
         y1=[]
-        C=0
-        N=0
+        N = y_.shape[1]
+        C = x.shape[-1]
         cnt = 0
         for yi in y_:
             cnt+=1
