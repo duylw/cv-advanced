@@ -13,7 +13,6 @@ if _GDINO_ROOT not in sys.path:
     sys.path.insert(0, _GDINO_ROOT)
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,7 +21,6 @@ from skimage.feature import peak_local_max
 from torch.nn import functional as F
 from transformers import CLIPModel, CLIPProcessor
 
-plt.switch_backend("Agg")
 warnings.filterwarnings("ignore")
 
 from CounTR import models_mae_cross
