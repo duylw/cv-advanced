@@ -14,6 +14,36 @@ from transformers import BertConfig, BertModel, BertPreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
 
+def _fallback_get_extended_attention_mask(attention_mask: Tensor, input_shape, device=None) -> Tensor:
+    if attention_mask.dim() == 3:
+        extended_attention_mask = attention_mask[:, None, :, :]
+    elif attention_mask.dim() == 2:
+        extended_attention_mask = attention_mask[:, None, None, :]
+    else:
+        raise ValueError(f"Wrong shape for attention_mask (shape {attention_mask.shape})")
+    extended_attention_mask = extended_attention_mask.to(dtype=torch.float32)
+    return (1.0 - extended_attention_mask) * torch.finfo(torch.float32).min
+
+
+def _fallback_invert_attention_mask(encoder_attention_mask: Tensor) -> Tensor:
+    if encoder_attention_mask.dim() == 4:
+        encoder_extended_attention_mask = encoder_attention_mask
+    elif encoder_attention_mask.dim() == 3:
+        encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+    elif encoder_attention_mask.dim() == 2:
+        encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+    else:
+        raise ValueError(f"Wrong shape for encoder_attention_mask (shape {encoder_attention_mask.shape})")
+    encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=torch.float32)
+    return (1.0 - encoder_extended_attention_mask) * torch.finfo(torch.float32).min
+
+
+def _fallback_get_head_mask(head_mask, num_hidden_layers: int):
+    if head_mask is None:
+        return [None] * num_hidden_layers
+    return head_mask
+
+
 class BertModelWarper(nn.Module):
     def __init__(self, bert_model):
         super().__init__()
@@ -24,9 +54,13 @@ class BertModelWarper(nn.Module):
         self.encoder = bert_model.encoder
         self.pooler = bert_model.pooler
 
-        self.get_extended_attention_mask = bert_model.get_extended_attention_mask
-        self.invert_attention_mask = bert_model.invert_attention_mask
-        self.get_head_mask = bert_model.get_head_mask
+        self.get_extended_attention_mask = getattr(
+            bert_model, "get_extended_attention_mask", _fallback_get_extended_attention_mask
+        )
+        self.invert_attention_mask = getattr(
+            bert_model, "invert_attention_mask", _fallback_invert_attention_mask
+        )
+        self.get_head_mask = getattr(bert_model, "get_head_mask", _fallback_get_head_mask)
 
     def forward(
         self,
