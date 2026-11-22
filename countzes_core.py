@@ -1,9 +1,14 @@
 """Shared inference pipeline and utilities for CountZES evaluation scripts."""
 
 import argparse
+import csv
+from datetime import datetime, timezone
+import json
 import math
 import os
+import subprocess
 import sys
+import time
 import warnings
 from typing import Dict, List, Optional, Tuple
 
@@ -31,6 +36,7 @@ from DSALVANet.utils.model_helper import build_model
 from DSALVANet.utils.PerSense_countr import vis_countr
 from groundingdino.util.inference import Model
 from per_segment_anything import SamPredictor, sam_model_registry
+from resource_monitor import get_hardware_summary, monitor_resources
 
 
 _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -96,6 +102,18 @@ def build_argument_parser(
         choices=["paper", "unit", "le1"],
         help="Single-instance RoI count filter: 'paper' (1<c<2), 'unit' (0.5<=c<=1.5), 'le1' (0<c<=1.5).",
     )
+    parser.add_argument(
+        "--max_images",
+        type=int,
+        default=0,
+        help="Optional limit on number of images to evaluate (0 = run full dataset).",
+    )
+    parser.add_argument(
+        "--stage_samples",
+        type=int,
+        default=5,
+        help="Number of images for which to save 2x4 stage-by-stage PNGs in outputs/<outdir>/stage_samples/.",
+    )
     return parser
 
 
@@ -115,8 +133,18 @@ def _ensure_rmsnorm() -> None:
         nn.RMSNorm = RMSNorm
 
 
-def load_pipeline_models(args) -> Dict[str, object]:
+def load_pipeline_models(args, log_dir: Optional[str] = None) -> Dict[str, object]:
     """Load SAM, GroundingDINO, counter, CLIP, and AnyUp models once."""
+    with monitor_resources(
+        "load_models",
+        log_dir=log_dir,
+        metadata={"fsoc": getattr(args, "fsoc", None), "sam_type": getattr(args, "sam_type", None)},
+        verbose=bool(log_dir),
+    ):
+        return _load_pipeline_models_impl(args)
+
+
+def _load_pipeline_models_impl(args) -> Dict[str, object]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("======> Load SAM")
@@ -1006,6 +1034,337 @@ def update_and_log_metrics(count_item: int, mae: float, mse: float, pred_count, 
     return count_item, mae, mse
 
 
+def _get_git_revision_info() -> Dict[str, Optional[str]]:
+    info: Dict[str, Optional[str]] = {"git_commit": None, "git_dirty": None}
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=_REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        info["git_commit"] = commit
+        info["git_dirty"] = bool(dirty)
+    except Exception:
+        pass
+    return info
+
+
+def save_stage_diagnostic_grid(
+    dbg: Dict[str, object],
+    vis_output_bgr: np.ndarray,
+    pred_count,
+    gt_count,
+    class_name: str,
+    save_path: str,
+) -> None:
+    """Save an offscreen 2x4 stage-by-stage diagnostic grid PNG without mutating pyplot backend."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    def _draw_box(img, box, color, label=None, thickness=2):
+        if box is None or len(box) != 4:
+            return
+        x0, y0, x1, y1 = [int(v) for v in box]
+        cv2.rectangle(img, (x0, y0), (x1, y1), color, thickness)
+        if label:
+            cv2.putText(img, label, (x0, max(15, y0 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+    img_rgb = dbg["img_rgb"]
+
+    vis_s1b = img_rgb.copy()
+    if dbg["dae_mask"] is not None:
+        mask_bool = dbg["dae_mask"].astype(bool)
+        vis_s1b[mask_bool] = (0.65 * vis_s1b[mask_bool] + 0.35 * np.array([0, 255, 0])).astype(np.uint8)
+    for b, c in zip(dbg["gdino_boxes"], dbg["gdino_confs"]):
+        _draw_box(vis_s1b, b, (255, 220, 0), f"{c:.2f}", 1)
+    _draw_box(vis_s1b, dbg["initial_box"], (255, 128, 0), "init", 2)
+    _draw_box(vis_s1b, dbg["dae"], (0, 255, 0), "DAE", 3)
+
+    vis_s2b = img_rgb.copy()
+    for b in dbg["box_list_stage2"]:
+        _draw_box(vis_s2b, b, (180, 180, 180), None, 1)
+    for b in dbg["single_instance_boxes1"]:
+        _draw_box(vis_s2b, b, (0, 220, 255), None, 2)
+    _draw_box(vis_s2b, dbg["dge"], (0, 100, 255), "DGE", 3)
+
+    vis_s3b = img_rgb.copy()
+    for b, lbl in zip(dbg["single_instance_boxes"], dbg["kmeans_labels"]):
+        col = (255, 165, 0) if lbl == 0 else (255, 0, 255)
+        _draw_box(vis_s3b, b, col, f"c{lbl}", 2)
+    _draw_box(vis_s3b, dbg["fce"], (255, 0, 0), "FCE", 3)
+
+    fig = Figure(figsize=(24, 11))
+    canvas = FigureCanvasAgg(fig)
+    axes = fig.subplots(2, 4)
+
+    axes[0, 0].imshow(dbg["sim_clip"], cmap="jet")
+    axes[0, 0].set_title(f"S1a. CLIP Sim Map ('{class_name}')")
+
+    axes[0, 1].imshow(vis_s1b)
+    axes[0, 1].set_title(f"S1b. GDINO ({len(dbg['gdino_boxes'])}) + SSES -> DAE (green)")
+
+    axes[0, 2].imshow(dbg["sim_up_dae"], cmap="jet")
+    axes[0, 2].set_title("S1c. SAM Sim Map (from DAE)")
+
+    axes[0, 3].imshow(img_rgb)
+    axes[0, 3].imshow(dbg["density_stage2"], cmap="jet", alpha=0.5)
+    if len(dbg["point_prompts_stage2"]) > 0:
+        pts2 = np.array(dbg["point_prompts_stage2"])
+        axes[0, 3].scatter(pts2[:, 0], pts2[:, 1], c="white", marker="*", s=60, edgecolors="black")
+    axes[0, 3].set_title(f"S2a. Density(DAE)={dbg['count_stage2']} + P2P ({len(dbg['point_prompts_stage2'])})")
+
+    axes[1, 0].imshow(vis_s2b)
+    axes[1, 0].set_title(f"S2b. GGES (KDE->{dbg['pseudo_gt_count']}) -> DGE (blue)")
+
+    axes[1, 1].imshow(img_rgb)
+    axes[1, 1].imshow(dbg["density_stage3"], cmap="jet", alpha=0.5)
+    if len(dbg["point_prompts_stage3"]) > 0:
+        pts3 = np.array(dbg["point_prompts_stage3"])
+        axes[1, 1].scatter(pts3[:, 0], pts3[:, 1], c="white", marker="*", s=60, edgecolors="black")
+    axes[1, 1].set_title(f"S3a. Density(DGE)={dbg['count_stage3']} + P2P ({len(dbg['point_prompts_stage3'])})")
+
+    axes[1, 2].imshow(vis_s3b)
+    axes[1, 2].set_title(f"S3b. FRES 2-Means ({len(dbg['single_instance_boxes'])}) -> FCE (red)")
+
+    axes[1, 3].imshow(cv2.cvtColor(vis_output_bgr, cv2.COLOR_BGR2RGB))
+    axes[1, 3].set_title(f"Final [DAE,DGE,FCE] -> Pred={pred_count} | GT={gt_count}")
+
+    for ax in axes.flat:
+        ax.axis("off")
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    canvas.print_png(save_path)
+    fig.clf()
+
+
+def run_recorded_evaluation(
+    dataset_name: str,
+    output_root: str,
+    args,
+    samples: List[Dict[str, object]],
+    models: Dict[str, object],
+) -> Dict[str, object]:
+    """Run dataset evaluation while persisting config, per-image stage telemetry, resource logs, and summary."""
+    from tqdm import tqdm
+
+    max_images = int(getattr(args, "max_images", 0) or 0)
+    if max_images > 0:
+        samples = samples[:max_images]
+
+    os.makedirs(output_root, exist_ok=True)
+    log_dir = os.path.join(output_root, "logs")
+    stage_dir = os.path.join(output_root, "stage_samples")
+    jsonl_path = os.path.join(output_root, "predictions.jsonl")
+    csv_path = os.path.join(output_root, "predictions.csv")
+    config_path = os.path.join(output_root, "run_config.json")
+    summary_path = os.path.join(output_root, "summary.json")
+
+    run_config = {
+        "dataset": dataset_name,
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "num_samples": len(samples),
+        "args": {k: v for k, v in vars(args).items()},
+        "git": _get_git_revision_info(),
+        "hardware": get_hardware_summary(),
+    }
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(run_config, f, indent=2, ensure_ascii=False)
+
+    stage_samples_limit = int(getattr(args, "stage_samples", 5) or 0)
+    records: List[Dict[str, object]] = []
+    failed_files: List[Dict[str, str]] = []
+    count_item = 0
+    mae = 0.0
+    mse = 0.0
+    total_gt = 0.0
+    total_pred = 0.0
+    stage_saved = 0
+    eval_t0 = time.perf_counter()
+
+    # Truncate previous predictions.jsonl for this output_root
+    with open(jsonl_path, "w", encoding="utf-8"):
+        pass
+
+    print(f"======> Start Recorded Evaluation ({dataset_name}, {len(samples)} images)")
+    print(f"Artifacts directory -> {output_root}")
+
+    try:
+        with monitor_resources(
+            f"eval_{dataset_name.lower()}",
+            log_dir=log_dir,
+            metadata={
+                "dataset": dataset_name,
+                "num_samples": len(samples),
+                "fsoc": getattr(args, "fsoc", None),
+                "fix_sses_inversion": getattr(args, "fix_sses_inversion", False),
+                "single_instance_mode": getattr(args, "single_instance_mode", "paper"),
+            },
+        ) as eval_mon:
+            for idx, sample in enumerate(tqdm(samples, desc=dataset_name)):
+                filename = str(sample["filename"])
+                image_path = str(sample["image_path"])
+                class_name = str(sample["class_name"])
+                gt_count = float(sample["gt_count"])
+                vis_save_path = sample.get("vis_save_path")
+
+                img_t0 = time.perf_counter()
+                row: Dict[str, object] = {
+                    "index": idx,
+                    "filename": filename,
+                    "class_name": class_name,
+                    "gt_count": int(gt_count) if gt_count.is_integer() else gt_count,
+                    "pred_count": None,
+                    "abs_error": None,
+                    "sq_error": None,
+                    "running_mae": None,
+                    "running_rmse": None,
+                    "duration_sec": None,
+                    "status": "ok",
+                    "gdino_boxes_n": None,
+                    "initial_box": None,
+                    "dae": None,
+                    "count_stage2": None,
+                    "p2p_stage2_n": None,
+                    "sam_boxes_stage2_n": None,
+                    "single1_n": None,
+                    "pseudo_gt_kde": None,
+                    "dge": None,
+                    "count_stage3": None,
+                    "p2p_stage3_n": None,
+                    "filtered_n": None,
+                    "single2_n": None,
+                    "fce": None,
+                }
+                try:
+                    vis_output, count, dbg = run_countzes_on_image(
+                        image_path=image_path,
+                        filename=filename,
+                        class_name=class_name,
+                        models=models,
+                        args=args,
+                        return_debug=True,
+                    )
+                    dur = round(time.perf_counter() - img_t0, 3)
+
+                    if getattr(args, "visualize", False) and vis_save_path:
+                        os.makedirs(os.path.dirname(str(vis_save_path)), exist_ok=True)
+                        cv2.imwrite(str(vis_save_path), vis_output)
+
+                    if stage_saved < stage_samples_limit:
+                        stem = os.path.splitext(os.path.basename(filename))[0]
+                        stage_png = os.path.join(stage_dir, f"{idx:04d}_{stem}_stages.png")
+                        save_stage_diagnostic_grid(
+                            dbg, vis_output, count, row["gt_count"], class_name, stage_png
+                        )
+                        stage_saved += 1
+
+                    count_item, mae, mse = update_and_log_metrics(
+                        count_item, mae, mse, count, gt_count
+                    )
+                    err = abs(float(count) - gt_count)
+                    total_gt += gt_count
+                    total_pred += float(count)
+
+                    row.update(
+                        {
+                            "pred_count": count,
+                            "abs_error": round(err, 4),
+                            "sq_error": round(err ** 2, 4),
+                            "running_mae": round(mae / count_item, 4),
+                            "running_rmse": round((mse / count_item) ** 0.5, 4),
+                            "duration_sec": dur,
+                            "gdino_boxes_n": len(dbg["gdino_boxes"]),
+                            "initial_box": dbg["initial_box"],
+                            "dae": dbg["dae"],
+                            "count_stage2": dbg["count_stage2"],
+                            "p2p_stage2_n": len(dbg["point_prompts_stage2"]),
+                            "sam_boxes_stage2_n": len(dbg["box_list_stage2"]),
+                            "single1_n": len(dbg["single_instance_boxes1"]),
+                            "pseudo_gt_kde": dbg["pseudo_gt_count"],
+                            "dge": dbg["dge"],
+                            "count_stage3": dbg["count_stage3"],
+                            "p2p_stage3_n": len(dbg["point_prompts_stage3"]),
+                            "filtered_n": len(dbg["filtered_boxes"]),
+                            "single2_n": len(dbg["single_instance_boxes"]),
+                            "fce": dbg["fce"],
+                        }
+                    )
+                    del dbg, vis_output
+                except Exception as exc:
+                    dur = round(time.perf_counter() - img_t0, 3)
+                    err_msg = f"error:{type(exc).__name__}:{exc}"
+                    print(f"[ERROR] {filename}: {err_msg}")
+                    row["duration_sec"] = dur
+                    row["status"] = err_msg
+                    failed_files.append({"filename": filename, "error": err_msg})
+
+                records.append(row)
+                with open(jsonl_path, "a", encoding="utf-8") as fj:
+                    fj.write(json.dumps(row, ensure_ascii=False) + "\n")
+    finally:
+        total_dur = round(time.perf_counter() - eval_t0, 3)
+        if records:
+            fieldnames = list(records[0].keys())
+            with open(csv_path, "w", newline="", encoding="utf-8") as fc:
+                writer = csv.DictWriter(fc, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in records:
+                    writer.writerow(
+                        {
+                            k: (json.dumps(v) if isinstance(v, (list, dict)) else v)
+                            for k, v in r.items()
+                        }
+                    )
+
+        overall_mae = round(mae / count_item, 4) if count_item > 0 else None
+        overall_rmse = round((mse / count_item) ** 0.5, 4) if count_item > 0 else None
+        summary = {
+            "dataset": dataset_name,
+            "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "fsoc": getattr(args, "fsoc", None),
+            "sam_type": getattr(args, "sam_type", None),
+            "fix_sses_inversion": getattr(args, "fix_sses_inversion", False),
+            "single_instance_mode": getattr(args, "single_instance_mode", "paper"),
+            "total_samples": len(samples),
+            "succeeded": count_item,
+            "failed": len(failed_files),
+            "failed_files": failed_files,
+            "MAE": overall_mae,
+            "RMSE": overall_rmse,
+            "total_gt": total_gt,
+            "total_pred": total_pred,
+            "total_duration_sec": total_dur,
+            "avg_sec_per_image": round(total_dur / len(records), 3) if records else None,
+            "resource_eval": eval_mon.get("record") if "eval_mon" in locals() else None,
+            "artifacts": {
+                "run_config": config_path,
+                "summary": summary_path,
+                "predictions_csv": csv_path,
+                "predictions_jsonl": jsonl_path,
+                "resource_logs_dir": log_dir,
+                "stage_samples_dir": stage_dir,
+            },
+        }
+        with open(summary_path, "w", encoding="utf-8") as fs:
+            json.dump(summary, fs, indent=2, ensure_ascii=False)
+
+        print("\n=== EVALUATION SUMMARY ===")
+        print(
+            f"Dataset={dataset_name} | Succeeded={count_item}/{len(samples)} | Failed={len(failed_files)} | "
+            f"MAE={overall_mae} | RMSE={overall_rmse} | Time={total_dur}s"
+        )
+        print(f"Saved evidence -> {output_root}")
+
+    return summary
+
+
 def evaluate_mask_annotated_dataset(
     dataset_subdir: str,
     default_outdir: str,
@@ -1013,8 +1372,6 @@ def evaluate_mask_annotated_dataset(
     default_countr_ckpt: str = "./CounTR/output_allnew_dir/FSC147.pth",
 ) -> None:
     """Shared evaluation loop for datasets using <id>.png and <id>A.png masks (MBM, VGG)."""
-    from tqdm import tqdm
-
     parser = build_argument_parser(
         default_outdir=default_outdir,
         default_fsoc=default_fsoc,
@@ -1022,31 +1379,24 @@ def evaluate_mask_annotated_dataset(
     )
     args = parser.parse_args()
     print("Args:", args)
-    models = load_pipeline_models(args)
 
-    images_path = os.path.join(args.data, dataset_subdir, "Images")
     os.makedirs("./outputs", exist_ok=True)
     output_path = os.path.join("./outputs", args.outdir)
+    models = load_pipeline_models(args, log_dir=os.path.join(output_path, "logs"))
 
-    count_item = 0
-    mae = 0.0
-    mse = 0.0
-
+    images_path = os.path.join(args.data, dataset_subdir, "Images")
+    samples: List[Dict[str, object]] = []
     for obj_name in sorted(os.listdir(images_path)):
         test_images_path = os.path.join(images_path, obj_name)
         if ".DS" in obj_name or not os.path.isdir(test_images_path):
             continue
-
         obj_output_path = os.path.join(output_path, obj_name)
-        os.makedirs(obj_output_path, exist_ok=True)
-        print("======> Start Counting")
-
         img_files = sorted(
             f
             for f in os.listdir(test_images_path)
             if f.endswith(".png") and not f.endswith("A.png")
         )
-        for img_file in tqdm(img_files):
+        for img_file in img_files:
             test_idx = os.path.splitext(img_file)[0]
             test_image_path = os.path.join(test_images_path, img_file)
             anno_image_path = os.path.join(test_images_path, f"{test_idx}A.png")
@@ -1055,20 +1405,14 @@ def evaluate_mask_annotated_dataset(
                 raise FileNotFoundError(f"Annotation mask not found: {anno_image_path}")
             _, thresh = cv2.threshold(anno_img, 1, 255, cv2.THRESH_BINARY)
             num_labels, _, _, _ = cv2.connectedComponentsWithStats(thresh)
-            gt_count = num_labels - 1
-
-            vis_output, count = run_countzes_on_image(
-                image_path=test_image_path,
-                filename=img_file,
-                class_name=obj_name,
-                models=models,
-                args=args,
+            samples.append(
+                {
+                    "filename": img_file,
+                    "image_path": test_image_path,
+                    "class_name": obj_name,
+                    "gt_count": int(num_labels - 1),
+                    "vis_save_path": os.path.join(obj_output_path, f"{test_idx}.png"),
+                }
             )
 
-            if args.visualize:
-                counter_output_path = os.path.join(obj_output_path, f"{test_idx}.png")
-                cv2.imwrite(counter_output_path, vis_output)
-
-            count_item, mae, mse = update_and_log_metrics(
-                count_item, mae, mse, count, gt_count
-            )
+    run_recorded_evaluation(dataset_subdir.upper(), output_path, args, samples, models)

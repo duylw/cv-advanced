@@ -1,13 +1,11 @@
 import json
 import os
-import cv2
 import numpy as np
 
 from countzes_core import (
     build_argument_parser,
     load_pipeline_models,
-    run_countzes_on_image,
-    update_and_log_metrics,
+    run_recorded_evaluation,
 )
 
 
@@ -23,18 +21,17 @@ def get_arguments():
 def main():
     args = get_arguments()
     print("Args:", args)
-    models = load_pipeline_models(args)
 
     os.makedirs("./outputs", exist_ok=True)
     output_path = os.path.join("./outputs", args.outdir)
+    models = load_pipeline_models(args, log_dir=os.path.join(output_path, "logs"))
     countzes(args, "CARPK", output_path, models)
 
 
 def countzes(args, obj_name, output_path, models):
-    output_path = os.path.join(output_path, obj_name)
-    os.makedirs(output_path, exist_ok=True)
+    vis_dir = os.path.join(output_path, obj_name)
+    os.makedirs(vis_dir, exist_ok=True)
 
-    print("======> Start Counting")
     carpk_dir = os.path.join(args.data, "CARPK")
     json_file_path = os.path.join(carpk_dir, "test.json")
     preprocessed_json_file_path = os.path.join(carpk_dir, "preprocessed_test.json")
@@ -58,33 +55,22 @@ def countzes(args, obj_name, output_path, models):
     if not isinstance(data, list):
         raise ValueError("JSON data is not a list of entries.")
 
-    count_item = 0
-    mae = 0.0
-    mse = 0.0
-
+    samples = []
     for entry in data:
         filename = entry["filename"]
-        print(f"Processing: {filename}")
-        image_path = os.path.join(image_folder_path, filename)
         gt_img_path = os.path.join(gt_path, entry["density"])
         gt_density = np.load(gt_img_path)
-        gt_count = int(np.sum(gt_density))
-
-        vis_output, count = run_countzes_on_image(
-            image_path=image_path,
-            filename=filename,
-            class_name="cars",
-            models=models,
-            args=args,
+        samples.append(
+            {
+                "filename": filename,
+                "image_path": os.path.join(image_folder_path, filename),
+                "class_name": "cars",
+                "gt_count": int(np.sum(gt_density)),
+                "vis_save_path": os.path.join(vis_dir, f"refined_{filename}"),
+            }
         )
 
-        if args.visualize:
-            counter_output_path = os.path.join(output_path, f"refined_{filename}")
-            cv2.imwrite(counter_output_path, vis_output)
-
-        count_item, mae, mse = update_and_log_metrics(
-            count_item, mae, mse, count, gt_count
-        )
+    run_recorded_evaluation("CARPK", output_path, args, samples, models)
 
 
 if __name__ == "__main__":
