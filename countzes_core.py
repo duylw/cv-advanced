@@ -192,7 +192,7 @@ def _load_pipeline_models_impl(args) -> Dict[str, object]:
     print("======> Done")
 
     _ensure_rmsnorm()
-    anyup = torch.hub.load("wimmerth/anyup", "anyup", verbose=False).to(device).eval()
+    anyup = torch.hub.load("wimmerth/anyup", "anyup", verbose=False, trust_repo=True).to(device).eval()
 
     return {
         "device": device,
