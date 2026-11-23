@@ -91,9 +91,34 @@ def build_argument_parser(
         help="Path to CounTR checkpoint.",
     )
     parser.add_argument(
+        "--box_threshold",
+        type=float,
+        default=0.15,
+        help="GroundingDINO box threshold (paper Sec. 4 = 0.15; original GitHub script = 0.20).",
+    )
+    parser.add_argument(
+        "--text_threshold",
+        type=float,
+        default=0.15,
+        help="GroundingDINO text threshold (default = 0.15).",
+    )
+    parser.add_argument(
+        "--sses_start_percentile",
+        type=int,
+        default=90,
+        help="Initial percentile threshold in SSES (paper Sec. 3.1 = 90; GitHub script = 80).",
+    )
+    parser.add_argument(
         "--fix_sses_inversion",
         action="store_true",
-        help="A/B flag: disable (1 - sim_clip) inversion inside SSES.",
+        default=True,
+        help="Paper-exact SSES scoring (no 1 - sim_clip inversion, default=True matching Eq. 2-3).",
+    )
+    parser.add_argument(
+        "--github_sses_inversion",
+        dest="fix_sses_inversion",
+        action="store_false",
+        help="Reproduce original GitHub repo behavior (enable sim_clip = 1 - sim_clip inside SSES).",
     )
     parser.add_argument(
         "--single_instance_mode",
@@ -372,8 +397,9 @@ def run_countzes_on_image(
 
     print(f"Target object: {[class_name]}")
     classes = [class_name]
-    box_threshold = 0.20
-    text_threshold = 0.15
+    box_threshold = float(getattr(args, "box_threshold", 0.15))
+    text_threshold = float(getattr(args, "text_threshold", 0.15))
+    sses_start_pct = int(getattr(args, "sses_start_percentile", 90))
     detections = grounding_dino_model.predict_with_classes(
         image=src_img,
         classes=classes,
@@ -411,7 +437,7 @@ def run_countzes_on_image(
     bbox_coord = detections.xyxy[best_index]
     initial_box = [int(v) for v in bbox_coord]
 
-    invert_sim = not args.fix_sses_inversion
+    invert_sim = not bool(getattr(args, "fix_sses_inversion", True))
     _restore_sam_cache(predictor, sam_cache)
     dae, dae_mask, _ = SSES(
         test_image,
@@ -424,7 +450,7 @@ def run_countzes_on_image(
         sim_clip=sim_clip,
         num_points=16,
         min_distance=5,
-        start_percentile=80,
+        start_percentile=sses_start_pct,
         min_percentile=50,
         step=10,
         filename=filename,
