@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 import time
@@ -134,10 +135,23 @@ def build_argument_parser(
         help="Optional limit on number of images to evaluate (0 = run full dataset).",
     )
     parser.add_argument(
+        "--sample_mode",
+        type=str,
+        default="first",
+        choices=["first", "stratified", "random"],
+        help="How to pick samples when --max_images > 0: 'first', 'stratified' (balanced across classes), or 'random'.",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=42,
+        help="Random seed used when --sample_mode is 'stratified' or 'random'.",
+    )
+    parser.add_argument(
         "--stage_samples",
         type=int,
         default=5,
-        help="Number of images for which to save 2x4 stage-by-stage PNGs in outputs/<outdir>/stage_samples/.",
+        help="Number of images for which to save 2x4 stage-by-stage PNGs in outputs/<outdir>/stage_samples/ (-1 = save all).",
     )
     return parser
 
@@ -1170,6 +1184,52 @@ def save_stage_diagnostic_grid(
     fig.clf()
 
 
+def select_evaluation_samples(
+    samples: List[Dict[str, object]],
+    max_images: int,
+    sample_mode: str = "first",
+    sample_seed: int = 42,
+) -> List[Dict[str, object]]:
+    """Select an evaluation subset deterministically ('first', 'stratified', or 'random')."""
+    if max_images <= 0 or max_images >= len(samples):
+        return list(samples)
+
+    if sample_mode == "first":
+        return list(samples[:max_images])
+
+    rng = random.Random(sample_seed)
+    if sample_mode == "random":
+        chosen_indices = sorted(rng.sample(range(len(samples)), max_images))
+        return [samples[i] for i in chosen_indices]
+
+    if sample_mode == "stratified":
+        by_class: Dict[str, List[Dict[str, object]]] = {}
+        for s in samples:
+            cls = str(s.get("class_name", ""))
+            by_class.setdefault(cls, []).append(s)
+        class_names = sorted(by_class.keys())
+        for cls in class_names:
+            rng.shuffle(by_class[cls])
+
+        selected: List[Dict[str, object]] = []
+        round_idx = 0
+        while len(selected) < max_images:
+            added_any = False
+            for cls in class_names:
+                bucket = by_class[cls]
+                if round_idx < len(bucket):
+                    selected.append(bucket[round_idx])
+                    added_any = True
+                    if len(selected) >= max_images:
+                        break
+            if not added_any:
+                break
+            round_idx += 1
+        return selected
+
+    raise ValueError(f"Unsupported sample_mode: {sample_mode}")
+
+
 def run_recorded_evaluation(
     dataset_name: str,
     output_root: str,
@@ -1180,9 +1240,14 @@ def run_recorded_evaluation(
     """Run dataset evaluation while persisting config, per-image stage telemetry, resource logs, and summary."""
     from tqdm import tqdm
 
+    total_available = len(samples)
     max_images = int(getattr(args, "max_images", 0) or 0)
-    if max_images > 0:
-        samples = samples[:max_images]
+    sample_mode = str(getattr(args, "sample_mode", "first") or "first")
+    sample_seed = int(getattr(args, "sample_seed", 42) or 42)
+    samples = select_evaluation_samples(
+        samples, max_images=max_images, sample_mode=sample_mode, sample_seed=sample_seed
+    )
+    selected_classes = sorted({str(s.get("class_name", "")) for s in samples})
 
     os.makedirs(output_root, exist_ok=True)
     log_dir = os.path.join(output_root, "logs")
@@ -1195,7 +1260,11 @@ def run_recorded_evaluation(
     run_config = {
         "dataset": dataset_name,
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "total_available_samples": total_available,
         "num_samples": len(samples),
+        "sample_mode": sample_mode,
+        "sample_seed": sample_seed,
+        "num_classes": len(selected_classes),
         "args": {k: v for k, v in vars(args).items()},
         "git": _get_git_revision_info(),
         "hardware": get_hardware_summary(),
@@ -1203,9 +1272,11 @@ def run_recorded_evaluation(
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=2, ensure_ascii=False)
 
-    stage_samples_limit = int(getattr(args, "stage_samples", 5) or 0)
+    stage_samples_raw = getattr(args, "stage_samples", 5)
+    stage_samples_limit = 5 if stage_samples_raw is None else int(stage_samples_raw)
     records: List[Dict[str, object]] = []
     failed_files: List[Dict[str, str]] = []
+    per_class_acc: Dict[str, Dict[str, float]] = {}
     count_item = 0
     mae = 0.0
     mse = 0.0
@@ -1218,7 +1289,10 @@ def run_recorded_evaluation(
     with open(jsonl_path, "w", encoding="utf-8"):
         pass
 
-    print(f"======> Start Recorded Evaluation ({dataset_name}, {len(samples)} images)")
+    print(
+        f"======> Start Recorded Evaluation ({dataset_name}, {len(samples)}/{total_available} images, "
+        f"mode={sample_mode}, classes={len(selected_classes)})"
+    )
     print(f"Artifacts directory -> {output_root}")
 
     try:
@@ -1283,7 +1357,7 @@ def run_recorded_evaluation(
                         os.makedirs(os.path.dirname(str(vis_save_path)), exist_ok=True)
                         cv2.imwrite(str(vis_save_path), vis_output)
 
-                    if stage_saved < stage_samples_limit:
+                    if stage_samples_limit < 0 or stage_saved < stage_samples_limit:
                         stem = os.path.splitext(os.path.basename(filename))[0]
                         stage_png = os.path.join(stage_dir, f"{idx:04d}_{stem}_stages.png")
                         save_stage_diagnostic_grid(
@@ -1297,6 +1371,13 @@ def run_recorded_evaluation(
                     err = abs(float(count) - gt_count)
                     total_gt += gt_count
                     total_pred += float(count)
+
+                    cls_bucket = per_class_acc.setdefault(
+                        class_name, {"n": 0.0, "abs_err": 0.0, "sq_err": 0.0}
+                    )
+                    cls_bucket["n"] += 1.0
+                    cls_bucket["abs_err"] += err
+                    cls_bucket["sq_err"] += err ** 2
 
                     row.update(
                         {
@@ -1351,6 +1432,18 @@ def run_recorded_evaluation(
 
         overall_mae = round(mae / count_item, 4) if count_item > 0 else None
         overall_rmse = round((mse / count_item) ** 0.5, 4) if count_item > 0 else None
+        per_class_metrics = {
+            cls: {
+                "num_images": int(st["n"]),
+                "MAE": round(st["abs_err"] / st["n"], 4),
+                "RMSE": round((st["sq_err"] / st["n"]) ** 0.5, 4),
+            }
+            for cls, st in sorted(
+                per_class_acc.items(),
+                key=lambda kv: kv[1]["abs_err"] / max(kv[1]["n"], 1.0),
+                reverse=True,
+            )
+        }
         summary = {
             "dataset": dataset_name,
             "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -1358,7 +1451,11 @@ def run_recorded_evaluation(
             "sam_type": getattr(args, "sam_type", None),
             "fix_sses_inversion": getattr(args, "fix_sses_inversion", False),
             "single_instance_mode": getattr(args, "single_instance_mode", "paper"),
+            "sample_mode": sample_mode,
+            "sample_seed": sample_seed,
+            "total_available_samples": total_available,
             "total_samples": len(samples),
+            "num_classes": len(selected_classes),
             "succeeded": count_item,
             "failed": len(failed_files),
             "failed_files": failed_files,
@@ -1368,6 +1465,8 @@ def run_recorded_evaluation(
             "total_pred": total_pred,
             "total_duration_sec": total_dur,
             "avg_sec_per_image": round(total_dur / len(records), 3) if records else None,
+            "stage_samples_saved": stage_saved,
+            "per_class_metrics": per_class_metrics,
             "resource_eval": eval_mon.get("record") if "eval_mon" in locals() else None,
             "artifacts": {
                 "run_config": config_path,
