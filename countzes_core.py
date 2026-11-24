@@ -1068,7 +1068,7 @@ def compute_clip_similarity_map(
     proc_kwargs = {"return_tensors": "pt", "padding": True}
     if clip_no_crop:
         target_h, target_w = _get_clip_input_hw(clip_processor)
-        proc_img = cv2.resize(img_rgb, (target_w, target_h), interpolation=cv2.INTER_BICUBIC)
+        proc_img = cv2.resize(img_rgb, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
         proc_kwargs.update({"do_resize": False, "do_center_crop": False})
 
     inputs = clip_processor(text=[class_name], images=[proc_img], **proc_kwargs).to(device)
