@@ -36,4 +36,21 @@ _darcs
 
 # output 
 work_dirs
+outputs/*
+!outputs/output.txt
+
+# local reference docs / draft notes
+countzes.pdf
+IMPROVEMENTS.md
+
+# checkpoints, dataset media & secrets
+*.pt
+.env
+*.pem
+*.key
+data/**/Images/
+data/**/images_384_VarV2/
+data/**/gt_density_map/
+data/**/gd_count_images/
+
 

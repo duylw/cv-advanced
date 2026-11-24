@@ -129,6 +129,19 @@ def build_argument_parser(
         help="Single-instance RoI count filter: 'paper' (1<c<2), 'unit' (0.5<=c<=1.5), 'le1' (0<c<=1.5).",
     )
     parser.add_argument(
+        "--clip_sim_mode",
+        type=str,
+        default="raw",
+        choices=["raw", "maskclip"],
+        help="CLIP patch similarity mode: 'raw' (last_hidden_state[:,1:,:]) or 'maskclip' (last-layer Value projection).",
+    )
+    parser.add_argument(
+        "--clip_no_crop",
+        action="store_true",
+        default=False,
+        help="Resize full image to CLIP input size without center-cropping rectangular images.",
+    )
+    parser.add_argument(
         "--max_images",
         type=int,
         default=0,
@@ -404,8 +417,16 @@ def run_countzes_on_image(
     # ==================================================
     # Stage 1: Detection Anchored Exemplar (DAE)
     # ==================================================
+    clip_sim_mode = str(getattr(args, "clip_sim_mode", "raw") or "raw")
+    clip_no_crop = bool(getattr(args, "clip_no_crop", False))
     sim_clip = compute_clip_similarity_map(
-        test_image, class_name, clip_model, clip_processor, device
+        test_image,
+        class_name,
+        clip_model,
+        clip_processor,
+        device,
+        clip_sim_mode=clip_sim_mode,
+        clip_no_crop=clip_no_crop,
     )
     sim_clip = normalize_sim_map(sim_clip)
 
@@ -685,6 +706,8 @@ def run_countzes_on_image(
         debug_info = {
             "img_rgb": test_image,
             "sim_clip": sim_clip,
+            "clip_sim_mode": clip_sim_mode,
+            "clip_no_crop": clip_no_crop,
             "gdino_boxes": detections.xyxy.tolist(),
             "gdino_confs": detections.confidence.tolist(),
             "initial_box": initial_box,
@@ -1018,26 +1041,64 @@ def get_masks_and_boxes(
     return masks_list, boxes_list
 
 
+def _get_clip_input_hw(clip_processor) -> Tuple[int, int]:
+    img_proc = getattr(clip_processor, "image_processor", clip_processor)
+    crop = getattr(img_proc, "crop_size", None)
+    if isinstance(crop, dict):
+        h = int(crop.get("height", 224))
+        w = int(crop.get("width", h))
+        return h, w
+    size = getattr(img_proc, "size", None)
+    if isinstance(size, dict):
+        s = int(size.get("shortest_edge", size.get("height", 224)))
+        return s, s
+    return 224, 224
+
+
 def compute_clip_similarity_map(
     img_rgb: np.ndarray,
     class_name: str,
     clip_model,
     clip_processor,
     device: torch.device,
+    clip_sim_mode: str = "raw",
+    clip_no_crop: bool = False,
 ) -> np.ndarray:
-    inputs = clip_processor(
-        text=[class_name], images=[img_rgb], return_tensors="pt", padding=True
-    ).to(device)
+    proc_img = img_rgb
+    proc_kwargs = {"return_tensors": "pt", "padding": True}
+    if clip_no_crop:
+        target_h, target_w = _get_clip_input_hw(clip_processor)
+        proc_img = cv2.resize(img_rgb, (target_w, target_h), interpolation=cv2.INTER_BICUBIC)
+        proc_kwargs.update({"do_resize": False, "do_center_crop": False})
+
+    inputs = clip_processor(text=[class_name], images=[proc_img], **proc_kwargs).to(device)
     with torch.no_grad():
-        vision_outputs = clip_model.vision_model(pixel_values=inputs["pixel_values"])
-        patch_embeds = vision_outputs.last_hidden_state[:, 1:, :]
+        if clip_sim_mode == "maskclip":
+            vision_outputs = clip_model.vision_model(
+                pixel_values=inputs["pixel_values"],
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            h_prev = vision_outputs.hidden_states[-2]
+            last_layer = clip_model.vision_model.encoder.layers[-1]
+            h_norm = last_layer.layer_norm1(h_prev)
+            v = last_layer.self_attn.v_proj(h_norm)
+            v = last_layer.self_attn.out_proj(v)
+            v = clip_model.vision_model.post_layernorm(v[:, 1:, :])
+            patch_embeds = clip_model.visual_projection(v)
+        elif clip_sim_mode == "raw":
+            vision_outputs = clip_model.vision_model(pixel_values=inputs["pixel_values"])
+            patch_embeds = vision_outputs.last_hidden_state[:, 1:, :]
+            patch_embeds = clip_model.visual_projection(patch_embeds)
+        else:
+            raise ValueError(f"Unsupported clip_sim_mode: {clip_sim_mode}")
+
         text_outputs = clip_model.get_text_features(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
         )
         if hasattr(text_outputs, "pooler_output"):
             text_outputs = text_outputs.pooler_output
-        patch_embeds = clip_model.visual_projection(patch_embeds)
     patch_embeds = patch_embeds / patch_embeds.norm(dim=-1, keepdim=True)
     text_emb = text_outputs / text_outputs.norm(dim=-1, keepdim=True)
     sim = (patch_embeds @ text_emb.unsqueeze(-1)).squeeze(-1)
@@ -1144,8 +1205,11 @@ def save_stage_diagnostic_grid(
     canvas = FigureCanvasAgg(fig)
     axes = fig.subplots(2, 4)
 
+    clip_tag = str(dbg.get("clip_sim_mode", "raw"))
+    if dbg.get("clip_no_crop", False):
+        clip_tag += "+nocrop"
     axes[0, 0].imshow(dbg["sim_clip"], cmap="jet")
-    axes[0, 0].set_title(f"S1a. CLIP Sim Map ('{class_name}')")
+    axes[0, 0].set_title(f"S1a. CLIP [{clip_tag}] ('{class_name}')")
 
     axes[0, 1].imshow(vis_s1b)
     axes[0, 1].set_title(f"S1b. GDINO ({len(dbg['gdino_boxes'])}) + SSES -> DAE (green)")
