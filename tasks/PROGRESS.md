@@ -8,9 +8,9 @@
 | ID | Pha / Tài liệu | Trạng thái | Mục tiêu cốt lõi |
 | :--- | :--- | :--- | :--- |
 | `01` | [Sửa bug pipeline & DSALVANet](01-fix-bugs.md) | `VERIFIED_DSALVANET` | P0/P1 & P2 A/B xong (`fix_sses_inversion=True`, `le1` thắng `20.21` MAE); còn `--fsoc countr` nếu dùng CounTR |
-| `02` | [Pha 1: Code đề xuất (SDES, MD-FCE, SMDF)](02-phase1-implement-proposals.md) | `READY_FOR_EC2_SMOKE` | Đã code đủ 3 cờ + pass `py_compile` + unit test + `USAGE.md`; chờ chạy smoke `n=5` trên EC2 |
-| `03` | [Pha 2: Dev Validation (Batch nhỏ)](03-phase2-dev-validation.md) | `PENDING` | Kiểm chứng cải tiến & tune ngưỡng trên `MBM` (44) + `FSC-147 val` (58) |
-| `04` | [Pha 3: Ablation Study (100% Dataset)](04-phase3-ablation-study.md) | `PENDING` | Chạy bảng Ablation đầy đủ trên `VGG` (200) + `MBM` (44) (+ `FSC-147 test`) |
+| `02` | [Pha 1: Code đề xuất (SDES, MD-FCE, SMDF)](02-phase1-implement-proposals.md) | `DONE` | Đã code (`a75c9c5`), docs (`61aabf4`) & pass smoke EC2 `5/5` (`57.26s`, VRAM `7.93 GB`) |
+| `03` | [Pha 2: Dev Validation (Batch nhỏ)](03-phase2-dev-validation.md) | `NEXT` | Bước 2A thử độc lập từng module trên `B0` (`val n=58` + `MBM`); Bước 2B cộng dồn 1-thay-đổi/nấc |
+| `04` | [Pha 3: Ablation Study (100% Dataset)](04-phase3-ablation-study.md) | `PENDING` | Chạy bảng Ablation 1-thay-đổi/hàng (`A0 → A5`) trên `MBM` (44) + `VGG` (200) (+ `FSC-147 test`) |
 | `05` | [Pha 4: Benchmark chính (3 Domain)](05-phase4-main-benchmark.md) | `PENDING` | So Baseline vs Ours trên `FSC-147 test`, `CARPK test`, `VGG` + `MBM` |
 | `06` | [Pha 5: Phân tích & Báo cáo / GDocs](06-phase5-report-and-gdocs.md) | `PENDING` | Tổng hợp số liệu, ảnh `stage_samples`, cập nhật Google Doc & viết báo cáo |
 | `ref` | [EC2 Datasets & Run Cheatsheet](ec2-setup.md) | `ACTIVE_REF` | Lệnh `tmux`, tải `MBM`/`VGG`/`CARPK` lên EC2, `scp` output, nhắc tắt máy |
@@ -30,6 +30,7 @@
 | Colab (`stratified_n29`, seed=42) | `FSC-147 test` (29) | `maskclip` + `clip_no_crop` | **11.2069** | **29.9027** | 15.78s/img |
 | EC2 T4 (`ec2_smoke_n5`, seed=42) | `FSC-147 test` (5) | `maskclip` + `clip_no_crop` | 4.2000 | 5.3852 | 16.94s/img |
 | EC2 T4 (`p2_val29`, seed=42) | `FSC-147 val` (29) | `github_inv` vs `paper` vs `unit` vs `le1` | 26.069 / 23.448 / 21.966 / **20.207** | 88.44 / 86.15 / 85.67 / **85.20** | 9.85–13.27s/img |
+| EC2 T4 (`ec2_smoke_all_proposals_n5`) | `FSC-147 val` (5) | `le1` + `maskclip+nocrop` + `sdes+md_fce+smdf` | 8.0000 | 15.3753 | 11.45s/img |
 
 ---
 
@@ -50,7 +51,7 @@
   - Sửa `GroundingDINO/bertwarper.py` cho `transformers >= 5.x`; `MaskCLIP + No-Crop` đã cài & thắng `raw` trên `n=29` (`11.21` vs `13.41` MAE).
   - Setup xong EC2 `g4dn.xlarge` (`/opt/pytorch`, `FSC-147`, `checkpoint_200.pth`) + smoke test `5/5` pass + verify P2 (`le1` MAE `20.2069` vs `paper` `23.4483` vs `github_inv` `26.069`).
   - Có sẵn telemetry (`summary.json`, `predictions.csv`, `logs/resource_usage.log`, `stage_samples/`) và Google Doc tracker (`1gE2K1dUJH4EObOuoqTOkJ_2LEFZoxi7moINtldBdYrw`).
-  - Pha 1 code (`--sdes`, `--md_fce`, `--smdf` + `USAGE.md`) đã xong & pass `py_compile` + unit test cục bộ.
+  - Pha 1 hoàn tất hoàn toàn: `--sdes`, `--md_fce`, `--smdf` đã commit (`a75c9c5`) & pass smoke EC2 `5/5` (`11.45s/img`, Peak VRAM `7,930.9 MB`).
 - **Chưa xong / Next:**
-  - Commit & push Pha 1 lên Git → chạy EC2 smoke `n=5` trong [02-phase1-implement-proposals.md](02-phase1-implement-proposals.md) rồi chuyển sang [03-phase2-dev-validation.md](03-phase2-dev-validation.md).
+  - Thực hiện **Pha 2 Bước 2A** ([03-phase2-dev-validation.md](03-phase2-dev-validation.md)): chạy 6 run độc lập trên `FSC-147 val` (`n=58`, `seed=42`) đối đầu thẳng `B0` (`paper` + `raw`) + tải `MBM` (44 ảnh).
   - Chuẩn bị tải `MBM`, `VGG`, `CARPK` lên EC2 theo [ec2-setup.md](ec2-setup.md).

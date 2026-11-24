@@ -1,7 +1,7 @@
 # Pha 1 — Hiện thực các đề xuất cải tiến trong Code
 
 - **Mục tiêu:** Đưa 3 cải tiến training-free từ `IMPROVEMENTS.md` vào [countzes_core.py](../countzes_core.py) dưới dạng cờ CLI opt-in (không phá mặc định baseline).
-- **Trạng thái:** `READY_FOR_EC2_SMOKE`
+- **Trạng thái:** `DONE` (`ec2_smoke_all_proposals_n5` pass `5/5`, `MAE=8.0`, `RMSE=15.3753`, `11.45s/img`, Peak VRAM `7,930.9 MB`)
 
 ---
 
@@ -14,12 +14,11 @@
   - Giữ lại mask SAM ở Stage 2 (`dge_mask`) và Stage 3 (`masks_sam_new`, kèm `dae_mask`) thay vì bỏ vào `_`, kết hợp trọng số tâm mật độ `1 + gamma * norm_density` để pooling đặc trưng AnyUp sạch nền trong `box_to_featvec`.
 - [x] **1.3. Hiện thực `SMDF` (`--smdf`, `--smdf_sigma_u`, `--smdf_priors`)**
   - Giữ đủ `density_raw_s2`, `density_raw_s3`, `density_raw_final` và hợp nhất cả tổng đếm lẫn bản đồ mật độ hiển thị qua `_smdf_fuse_stage_densities` theo $R_{\text{unit}}^{(s)} \cdot R_{\text{kde}}^{(s)}$.
-- [x] **1.4. Kiểm tra kỹ thuật (Local) & [ ] Smoke Test EC2**
+- [x] **1.4. Kiểm tra kỹ thuật (Local) & Smoke Test EC2**
   - [x] `python -m py_compile` pass toàn bộ 7 file `.py` + unit test logic (`_sdes_select_indices`, `_sdes_diversity_factor`, `_smdf_fuse_stage_densities`, default parser flags = `False`).
-  - [ ] Chạy EC2 smoke `n=5` với tất cả cờ mới bật (`--single_instance_mode le1 --clip_sim_mode maskclip --clip_no_crop --sdes --md_fce --smdf`).
-- [x] **1.5. Cập nhật tài liệu (`USAGE.md` & skill schema) & [ ] Commit**
-  - [x] Đã cập nhật [USAGE.md](../USAGE.md) và `.agents/skills/countzes-usage-docs/SKILL.md` theo đúng parser mới.
-  - [ ] Commit code sạch qua `/commit`.
+  - [x] Đã chạy EC2 smoke `n=5` (`ec2_smoke_all_proposals_n5` trên `FSC147_val`): `5/5` thành công, `MAE=8.0`, `RMSE=15.3753`, `57.26s` (`11.45s/img`), Peak VRAM `7,930.9 MB` (không tăng VRAM so với baseline).
+- [x] **1.5. Cập nhật tài liệu (`USAGE.md` & skill schema) & Commit**
+  - [x] Đã cập nhật [USAGE.md](../USAGE.md) và `.agents/skills/countzes-usage-docs/SKILL.md` theo đúng parser mới (`a75c9c5`, `61aabf4`).
 
 ---
 

@@ -168,8 +168,8 @@ Trong **[CELL-7]** của `colab_run_fsc147.ipynb`, chỉ cần sửa các biến
 
 Mỗi lần chạy tự động lưu đầy đủ bằng chứng vào `outputs/<outdir>/` (trên Colab symlink thẳng tới `MyDrive/CountZES/outputs/<outdir>/`):
 - `run_config.json`: Toàn bộ tham số CLI, thông số phần cứng (CPU/RAM/GPU), commit Git, thời gian chạy.
-- `summary.json`: Chỉ số tổng `MAE`, `RMSE`, số ảnh thành công/lỗi, thời gian trung bình/ảnh, tài nguyên tiêu thụ, và **`per_class_metrics`** (MAE/RMSE từng class).
-- `predictions.csv` & `predictions.jsonl`: Số liệu chi tiết từng ảnh qua từng stage (`gt_count`, `pred_count`, `abs_error`, `gdino_boxes_n`, `dae`, `count_stage2`, `pseudo_gt_kde`, `dge`, `count_stage3`, `single2_n`, `fce`, `duration_sec`, `status`).
+- `summary.json`: Chỉ số tổng `MAE`, `RMSE`, số ảnh thành công/lỗi, thời gian trung bình/ảnh, tài nguyên tiêu thụ, **`per_class_metrics`**, và **`proposal_diagnostics`** (độ tương phản CLIP nền/vật thể, tỷ lệ ảnh trùng exemplar, tỷ lệ foreground Stage 3, số ca SMDF can thiệp).
+- `predictions.csv` & `predictions.jsonl`: Số liệu chi tiết từng ảnh qua từng stage (`gt_count`, `pred_count`, `abs_error`, `gdino_boxes_n`, `dae`, `count_stage2`, `single1_pre_sdes_n`, `single1_n`, `pseudo_gt_kde`, `dge`, `count_stage3`, `single2_n`, `fce`, `clip_fg_bg_contrast`, `dae_in_crop_edge`, `exemplar_max_iou`, `exemplar_iou_dae_dge`, `exemplar_scale_spread`, `stage3_fg_ratio_mean`, `fce_maj_cos_sim`, `fce_centroid_sep`, `ex_unit_final_raw`, `count_final_raw`, `smdf_weights`, `duration_sec`, `status`).
 - `logs/resource_usage.log` & `logs/resource_usage.jsonl`: CPU avg/peak, System RAM, Process RSS, và CUDA VRAM peak theo từng giai đoạn (`load_models`, `eval_*`). *(Lưu ý: nếu chạy trùng lại cùng một `OUTDIR`, log tài nguyên được ghi nối thêm vào cuối file; các file khác được ghi mới).*
 - `stage_samples/*.png`: Lưới ảnh `2x4` từng bước (`S1a. CLIP` -> `S1b. GDINO+SSES->DAE` -> `S1c. SAM Sim` -> `S2a. Density+P2P` -> `S2b. GGES/KDE->DGE` -> `S3a. Density+P2P` -> `S3b. FRES 2-Means->FCE` -> `Final`).
 - `<DATASET>/`: Ảnh kết quả cuối cùng với 3 bounding box exemplar và density overlay (khi bật `--visualize`).

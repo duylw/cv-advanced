@@ -1,47 +1,90 @@
-# Pha 2 — Dev Validation trên Batch nhỏ
+# Pha 2 — Dev Validation trên Batch nhỏ (Tách bạch Độc lập → Cộng dồn)
 
-- **Mục tiêu:** Chứng minh từng phương pháp thực sự cải thiện MAE / RMSE / tốc độ và tinh chỉnh ngưỡng **trước khi** đốt giờ GPU cho toàn bộ dataset.
-- **Nguyên tắc vàng:** **CẤM tune ngưỡng trên `FSC-147 test` (1,190 ảnh)** để tránh rò rỉ tập test. Chỉ dùng `MBM` (44 ảnh) và `FSC-147 val` (subset `n=58`, stratified 2 ảnh/class × 29 classes).
-- **Trạng thái:** `PENDING` (chờ Pha 1)
-
----
-
-## Ma trận chạy thử nhanh (Paired — cùng `sample_seed=42`)
-
-Mỗi dòng dưới mất **~12 phút (`MBM`)** hoặc **~16 phút (`FSC-147 val n=58`)**:
-
-- [ ] **2.1. Baseline chuẩn hóa trên tập Dev**
-  - `B0`: `raw` (gốc) trên `MBM` (44) và `FSC-147 val` (`n=58`).
-  - `B1`: `+ maskclip + clip_no_crop` trên `MBM` (44) và `FSC-147 val` (`n=58`).
-- [ ] **2.2. Kiểm chứng độc lập từng đề xuất (cộng dồn trên `B1`)**
-  - `D1` (`B1 + --sdes`): xem `stage_samples` xem 3 exemplar có hết dính vào 1 vật thể không, kiểm tra `s/img`.
-  - `D2` (`B1 + --md_fce`): xem hiệu quả khi ảnh có nền phức tạp (chọn tham số `alpha` tốt nhất trên `val`/`MBM`).
-  - `D3` (`B1 + --smdf`): xem có giảm các case nổ count / over-count nặng không.
-- [ ] **2.3. Kiểm chứng tổ hợp (`B1 + SDES + MD-FCE + SMDF`)**
-  - Chạy tổ hợp đầy đủ trên `MBM` (44) và `FSC-147 val` (`n=58`), kiểm tra `predictions.csv` từng ảnh xem cái nào tốt lên / cái nào tệ đi.
+- **Mục tiêu:** Chứng minh minh bạch từng cải tiến khi đứng **độc lập** so với Paper Baseline `B0`, sau đó kiểm tra **cộng dồn từng nấc 1 thay đổi** trước khi chạy 100% dataset ở Pha 3.
+- **Nguyên tắc vàng:** **CẤM tune trên `FSC-147 test` (1,190 ảnh).** Chỉ chạy trên `FSC-147 val` (`n=58`, stratified 2 ảnh/class × 29 classes, `seed=42`) và `MBM` (44 ảnh).
+- **Trạng thái:** `NEXT`
 
 ---
 
-## Lệnh mẫu Dev trên `FSC-147 val` (`n=58`)
+## Phân vai minh bạch 3 lớp (không gộp chung)
+
+- **Lớp 0 — Paper Baseline (`B0`):** `fix_sses_inversion=True` + `single_instance_mode=paper` + `clip_sim_mode=raw` (`clip_no_crop=False`).
+- **Lớp Hiệu chỉnh cài đặt (từ P2):** `--single_instance_mode le1` (`0 < c <= 1.5`).
+- **Lớp 4 Module Thuật toán (mỗi module giải quyết 1 stage):**
+  1. **CLIP Fix (Stage 1):** `--clip_sim_mode maskclip --clip_no_crop`
+  2. **SDES (Stage 2–3):** `--sdes`
+  3. **MD-FCE (Stage 3):** `--md_fce`
+  4. **SMDF (Final):** `--smdf`
+
+---
+
+## Bước 2A — Kiểm chứng ĐỘC LẬP từng thành phần trên nền `B0`
+
+Chạy **từng thành phần một mình** trên đúng `B0` (`FSC-147 val n=58`, ~10 phút/run → ~60 phút tổng):
+
+- [ ] `B0`: `paper` + `raw` *(mốc Paper Baseline)*
+- [ ] `B0_le1`: `B0 + --single_instance_mode le1` *(đo riêng hiệu ứng đổi ngưỡng đơn vật thể)*
+- [ ] `I1_clip`: `B0 + --clip_sim_mode maskclip --clip_no_crop` *(đo riêng cải tiến CLIP Stage 1)*
+- [ ] `I2_sdes`: `B0 + --sdes` *(đo riêng SDES khi không có MaskCLIP/le1)*
+- [ ] `I3_mdfce`: `B0 + --md_fce` *(đo riêng MD-FCE)*
+- [ ] `I4_smdf`: `B0 + --smdf` *(đo riêng SMDF)*
+- [ ] *(Bổ sung khi có `MBM` trên EC2)* Chạy lặp 6 mốc trên `MBM` (44 ảnh, ~8–9 phút/run).
 
 ```bash
-# Baseline + MaskCLIP trên val (n=58)
-python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
-  --max_images 58 --sample_mode stratified --sample_seed 42 \
-  --clip_sim_mode maskclip --clip_no_crop --stage_samples 10 --visualize \
-  --outdir dev_fscval58_maskclip
+cd ~/cv-advanced
+source /opt/pytorch/bin/activate
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
-# Full proposals trên cùng 58 ảnh val
+# B0. Paper Baseline (paper + raw)
 python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
   --max_images 58 --sample_mode stratified --sample_seed 42 \
-  --clip_sim_mode maskclip --clip_no_crop --sdes --md_fce --smdf \
-  --stage_samples 10 --visualize \
-  --outdir dev_fscval58_full
+  --stage_samples 10 --outdir dev_2a_val58_B0
+
+# B0 + le1 (hiệu chỉnh ngưỡng P2)
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --single_instance_mode le1 --stage_samples 10 --outdir dev_2a_val58_le1
+
+# I1. + CLIP Fix (MaskCLIP + No-Crop)
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --clip_sim_mode maskclip --clip_no_crop --stage_samples 10 --outdir dev_2a_val58_clip
+
+# I2. + SDES (độc lập)
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --sdes --stage_samples 10 --outdir dev_2a_val58_sdes
+
+# I3. + MD-FCE (độc lập)
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --md_fce --stage_samples 10 --outdir dev_2a_val58_mdfce
+
+# I4. + SMDF (độc lập)
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --smdf --stage_samples 10 --outdir dev_2a_val58_smdf
+
+# Tổng hợp kết quả Bước 2A
+python -c "import glob, json; [print(p, '->', {k: d.get(k) for k in ('MAE','RMSE','avg_sec_per_image','single_instance_mode','clip_sim_mode','clip_no_crop','sdes','md_fce','smdf')}) for p in sorted(glob.glob('outputs/dev_2a_val58_*/summary.json')) for d in [json.load(open(p))]]"
 ```
 
 ---
 
+## Bước 2B — Kiểm chứng CỘNG DỒN từng nấc 1 thay đổi (sau khi chốt 2A)
+
+Chỉ giữ các thành phần vượt qua cổng 2A rồi ghép tuần tự theo đúng luồng pipeline (mỗi bước thêm đúng **1 thay đổi duy nhất**):
+
+- [ ] `S1`: `B0 + le1` *(lấy lại số từ Bước 2A)*
+- [ ] `S2`: `S1 + CLIP Fix` (`--clip_sim_mode maskclip --clip_no_crop`)
+- [ ] `S3`: `S2 + SDES` (`--sdes`)
+- [ ] `S4`: `S3 + MD-FCE` (`--md_fce`)
+- [ ] `S5`: `S4 + SMDF` (`--smdf`) → **CountZES+ Full**
+- [ ] Kiểm tra `predictions.csv` từng ảnh xem bước nào thắng / thua outlier.
+
+---
+
 ## Cổng quyết định (Go / No-Go Gate trước Pha 3)
-- **GIỮ** đề xuất nếu cải thiện MAE hoặc RMSE (hoặc giữ nguyên độ chính xác nhưng giảm đáng kể thời gian chạy) trên cả 2 domain (`FSC-147 val` và `MBM`) mà không gây outlier mới.
-- **ĐIỀU CHỈNH / LOẠI BỎ** ngay trong pha này nếu một đề xuất làm tụt metric đều cả 2 tập, không tốn GPU chạy full ở Pha 3.
-- **Đóng băng toàn bộ hyperparameter** sau khi xong Pha 2.
+- **GIỮ** thành phần nếu ở Bước 2A nó cải thiện MAE / RMSE (hoặc giảm mạnh `s/img` không hại MAE) trên tập Dev mà không sinh outlier nặng.
+- **TINH CHỈNH / LOẠI BỎ** ngay nếu tụt metric khi đứng một mình hoặc khi cộng dồn ở 2B.
+- **Đóng băng toàn bộ hyperparameter** trước khi sang Pha 3.
