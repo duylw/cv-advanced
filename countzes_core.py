@@ -574,6 +574,105 @@ def _render_density_overlay_bgr(
     return output_bgr
 
 
+def _compute_clip_diagnostics(
+    sim_clip_hw: np.ndarray,
+    gdino_boxes_xyxy,
+    dae_box_xyxy,
+    width: int,
+    height: int,
+) -> Tuple[Optional[float], int]:
+    """Measure CLIP foreground-background contrast and whether DAE sits inside the center-crop edge."""
+    fg_mask = np.zeros((height, width), dtype=bool)
+    for b in gdino_boxes_xyxy:
+        x0, y0, x1, y1 = _clamp_box_xyxy(b, width, height)
+        fg_mask[y0:y1, x0:x1] = True
+    contrast = None
+    if fg_mask.any() and (~fg_mask).any():
+        contrast = round(float(sim_clip_hw[fg_mask].mean() - sim_clip_hw[~fg_mask].mean()), 4)
+
+    cx = 0.5 * (float(dae_box_xyxy[0]) + float(dae_box_xyxy[2]))
+    cy = 0.5 * (float(dae_box_xyxy[1]) + float(dae_box_xyxy[3]))
+    in_crop_edge = 0
+    if width > height:
+        margin = 0.5 * float(width - height)
+        if cx < margin or cx > (float(width) - margin):
+            in_crop_edge = 1
+    elif height > width:
+        margin = 0.5 * float(height - width)
+        if cy < margin or cy > (float(height) - margin):
+            in_crop_edge = 1
+    return contrast, in_crop_edge
+
+
+def _compute_exemplar_geometry_stats(dae, dge, fce) -> Tuple[float, float, float]:
+    """Compute (max pairwise IoU, IoU(DAE, DGE), log-area scale spread) across the 3 exemplars."""
+    iou_dd = _box_iou_xyxy(dae, dge)
+    iou_df = _box_iou_xyxy(dae, fce)
+    iou_gf = _box_iou_xyxy(dge, fce)
+    max_iou = round(max(iou_dd, iou_df, iou_gf), 4)
+    areas = [_box_area_xyxy(b) for b in (dae, dge, fce)]
+    scale_spread = round(math.log(max(areas) / min(areas)), 4)
+    return max_iou, round(iou_dd, 4), scale_spread
+
+
+def _compute_stage3_fg_ratio(
+    boxes_xyxy: List[List[int]],
+    masks_hw: List[Optional[np.ndarray]],
+    width: int,
+    height: int,
+) -> Optional[float]:
+    """Compute mean SAM mask foreground occupancy inside Stage 3 single-instance boxes."""
+    ratios: List[float] = []
+    for box, mask in zip(boxes_xyxy, masks_hw):
+        if mask is None:
+            continue
+        x0, y0, x1, y1 = _clamp_box_xyxy(box, width, height)
+        area = max(1, (x1 - x0) * (y1 - y0))
+        fg_pixels = float(mask[y0:y1, x0:x1].astype(bool).sum())
+        ratios.append(fg_pixels / float(area))
+    if not ratios:
+        return None
+    return round(sum(ratios) / len(ratios), 4)
+
+
+def _summarize_proposal_diagnostics(records: List[Dict[str, object]]) -> Dict[str, object]:
+    """Aggregate per-image mechanistic telemetry across all succeeded rows into summary.json."""
+    ok_rows = [r for r in records if r.get("status") == "ok"]
+
+    def _mean(key: str) -> Optional[float]:
+        vals = [float(r[key]) for r in ok_rows if r.get(key) is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    edge_vals = [int(r["dae_in_crop_edge"]) for r in ok_rows if r.get("dae_in_crop_edge") is not None]
+    max_ious = [float(r["exemplar_max_iou"]) for r in ok_rows if r.get("exemplar_max_iou") is not None]
+    smdf_deltas = [
+        abs(float(r["pred_count"]) - float(r["count_final_raw"]))
+        for r in ok_rows
+        if r.get("pred_count") is not None and r.get("count_final_raw") is not None
+    ]
+    smdf_active = [d for d in smdf_deltas if d >= 1e-6]
+
+    return {
+        "clip_fg_bg_contrast_mean": _mean("clip_fg_bg_contrast"),
+        "dae_in_crop_edge_count": sum(edge_vals) if edge_vals else 0,
+        "dae_in_crop_edge_rate": round(sum(edge_vals) / len(edge_vals), 4) if edge_vals else None,
+        "stage2_pre_sdes_mean": _mean("single1_pre_sdes_n"),
+        "stage2_post_sdes_mean": _mean("single1_n"),
+        "exemplar_max_iou_mean": _mean("exemplar_max_iou"),
+        "exemplar_iou_dae_dge_mean": _mean("exemplar_iou_dae_dge"),
+        "exemplar_dup_rate_iou50": (
+            round(sum(1 for v in max_ious if v >= 0.5) / len(max_ious), 4) if max_ious else None
+        ),
+        "exemplar_scale_spread_mean": _mean("exemplar_scale_spread"),
+        "stage3_fg_ratio_mean": _mean("stage3_fg_ratio_mean"),
+        "fce_maj_cos_sim_mean": _mean("fce_maj_cos_sim"),
+        "fce_centroid_sep_mean": _mean("fce_centroid_sep"),
+        "ex_unit_final_raw_mean": _mean("ex_unit_final_raw"),
+        "smdf_active_count": len(smdf_active),
+        "smdf_mean_abs_delta": round(sum(smdf_deltas) / len(smdf_deltas), 4) if smdf_deltas else None,
+    }
+
+
 def _to_imagenet_tensor(img_rgb_uint8: np.ndarray, device: torch.device) -> torch.Tensor:
     assert img_rgb_uint8.ndim == 3 and img_rgb_uint8.shape[2] == 3
     t = torch.from_numpy(img_rgb_uint8).float().permute(2, 0, 1).unsqueeze(0) / 255.0
@@ -921,6 +1020,8 @@ def run_countzes_on_image(
     if vecs.shape[0] == 1:
         fce = single_instance_boxes[0]
         kmeans_labels = [0]
+        fce_maj_cos_sim = 1.0
+        fce_centroid_sep = 0.0
     else:
         c0_idx = 0
         c1_idx = int(torch.argmin(vecs @ vecs[c0_idx]))
@@ -947,6 +1048,8 @@ def run_countzes_on_image(
         majority = int(torch.argmax(sizes))
         maj_idx = (labels == majority).nonzero(as_tuple=False).squeeze(1)
         sims_to_centroid = vecs[maj_idx] @ centroids[majority]
+        fce_maj_cos_sim = round(float(sims_to_centroid.mean().item()), 4)
+        fce_centroid_sep = round(1.0 - float((centroids[0] @ centroids[1]).item()), 4)
         if use_sdes:
             div_factors = torch.tensor(
                 [
@@ -1000,6 +1103,20 @@ def run_countzes_on_image(
 
     debug_info = None
     if return_debug:
+        clip_fg_bg_contrast, dae_in_crop_edge = _compute_clip_diagnostics(
+            sim_clip, detections.xyxy, dae, W, H
+        )
+        exemplar_max_iou, exemplar_iou_dae_dge, exemplar_scale_spread = (
+            _compute_exemplar_geometry_stats(dae, dge, fce)
+        )
+        stage3_fg_ratio_mean = _compute_stage3_fg_ratio(
+            single_instance_boxes, single_instance_masks, W, H
+        )
+        ex_unit_final_raw = (
+            round(float(np.mean([_box_count_from_density(b, density_raw_final) for b in boxes])), 4)
+            if density_raw_final is not None
+            else None
+        )
         debug_info = {
             "img_rgb": test_image,
             "sim_clip": sim_clip,
@@ -1008,6 +1125,8 @@ def run_countzes_on_image(
             "sdes": use_sdes,
             "md_fce": use_md_fce,
             "smdf": bool(getattr(args, "smdf", False)),
+            "clip_fg_bg_contrast": clip_fg_bg_contrast,
+            "dae_in_crop_edge": dae_in_crop_edge,
             "gdino_boxes": detections.xyxy.tolist(),
             "gdino_confs": detections.confidence.tolist(),
             "initial_box": initial_box,
@@ -1029,8 +1148,15 @@ def run_countzes_on_image(
             "point_prompts_stage3": point_prompts2,
             "filtered_boxes": filtered_boxes,
             "single_instance_boxes": single_instance_boxes,
+            "stage3_fg_ratio_mean": stage3_fg_ratio_mean,
+            "fce_maj_cos_sim": fce_maj_cos_sim,
+            "fce_centroid_sep": fce_centroid_sep,
             "kmeans_labels": kmeans_labels,
             "fce": fce,
+            "exemplar_max_iou": exemplar_max_iou,
+            "exemplar_iou_dae_dge": exemplar_iou_dae_dge,
+            "exemplar_scale_spread": exemplar_scale_spread,
+            "ex_unit_final_raw": ex_unit_final_raw,
             "count_final_raw": count_final_raw,
             "smdf_weights": smdf_weights,
             "final_count": count,
@@ -1730,6 +1856,15 @@ def run_recorded_evaluation(
                     "filtered_n": None,
                     "single2_n": None,
                     "fce": None,
+                    "clip_fg_bg_contrast": None,
+                    "dae_in_crop_edge": None,
+                    "exemplar_max_iou": None,
+                    "exemplar_iou_dae_dge": None,
+                    "exemplar_scale_spread": None,
+                    "stage3_fg_ratio_mean": None,
+                    "fce_maj_cos_sim": None,
+                    "fce_centroid_sep": None,
+                    "ex_unit_final_raw": None,
                     "count_final_raw": None,
                     "smdf_weights": None,
                 }
@@ -1793,6 +1928,15 @@ def run_recorded_evaluation(
                             "filtered_n": len(dbg["filtered_boxes"]),
                             "single2_n": len(dbg["single_instance_boxes"]),
                             "fce": dbg["fce"],
+                            "clip_fg_bg_contrast": dbg["clip_fg_bg_contrast"],
+                            "dae_in_crop_edge": dbg["dae_in_crop_edge"],
+                            "exemplar_max_iou": dbg["exemplar_max_iou"],
+                            "exemplar_iou_dae_dge": dbg["exemplar_iou_dae_dge"],
+                            "exemplar_scale_spread": dbg["exemplar_scale_spread"],
+                            "stage3_fg_ratio_mean": dbg["stage3_fg_ratio_mean"],
+                            "fce_maj_cos_sim": dbg["fce_maj_cos_sim"],
+                            "fce_centroid_sep": dbg["fce_centroid_sep"],
+                            "ex_unit_final_raw": dbg["ex_unit_final_raw"],
                             "count_final_raw": dbg["count_final_raw"],
                             "smdf_weights": (
                                 [round(float(w), 4) for w in dbg["smdf_weights"]]
@@ -1869,6 +2013,7 @@ def run_recorded_evaluation(
             "total_duration_sec": total_dur,
             "avg_sec_per_image": round(total_dur / len(records), 3) if records else None,
             "stage_samples_saved": stage_saved,
+            "proposal_diagnostics": _summarize_proposal_diagnostics(records),
             "per_class_metrics": per_class_metrics,
             "resource_eval": eval_mon.get("record") if "eval_mon" in locals() else None,
             "artifacts": {
