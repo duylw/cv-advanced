@@ -1,40 +1,39 @@
 # Pha 1 — Hiện thực các đề xuất cải tiến trong Code
 
 - **Mục tiêu:** Đưa 3 cải tiến training-free từ `IMPROVEMENTS.md` vào [countzes_core.py](../countzes_core.py) dưới dạng cờ CLI opt-in (không phá mặc định baseline).
-- **Trạng thái:** `NEXT`
+- **Trạng thái:** `READY_FOR_EC2_SMOKE`
 
 ---
 
 ## Danh sách công việc
 
-- [ ] **1.1. Hiện thực `SDES` (`--sdes`, `--sdes_iou_thresh`, `--sdes_max_exemplars`)**
-  - Spatial Deduplication for Exemplar Selection trong `SSES`: thay vì giữ top-k điểm trùng trên cùng 1 object, chạy Greedy Spatial Suppression (NMS theo khoảng cách chuẩn hóa / IoU mask SAM hoặc radius) để ép đa dạng tối đa 3 exemplars cho DGE.
-  - Kỳ vọng phụ: giảm gọi SAM trùng lặp ở Stage 2 → tăng tốc `s/img`.
-- [ ] **1.2. Hiện thực `MD-FCE` (`--md_fce`, `--md_fce_alpha`)**
-  - Mask-Driven Feature Contrastive Enhancement ở Stage 3 (FCE): dùng `best_mask` của SAM phân tách Foreground vs Background trong `hr_features` `(256, 256)` rồi khử/giảm thành phần nền trước khi đưa vector exemplar vào `DSALVANet`/`CounTR`.
-  - Kỳ vọng: giảm over-counting khi nền rối hoặc exemplar có background lớn.
-- [ ] **1.3. Hiện thực `SMDF` (`--smdf`, `--smdf_weights`)**
-  - Semantic-Morphological Density Fusion: thay `max(D_dae, D_dge, D_fce)` hoặc cộng thô bằng fusion có trọng số thích ứng dựa trên độ tin cậy CLIP / phân tán mật độ (tránh đỉnh nhiễu cục bộ gây sai lệch tổng đếm).
-- [ ] **1.4. Kiểm tra kỹ thuật & Smoke Test**
-  - `python -m py_compile countzes_core.py countzes_*.py` pass không lỗi.
-  - Viết unit test nhanh (CPU/mock tensor) kiểm tra `baseline` (`--sdes=False`, `--md_fce=False`, `--smdf=False`) cho ra kết quả giống hệt trước khi sửa.
-  - Chạy EC2 smoke `n=5` với tất cả cờ mới bật (`--clip_sim_mode maskclip --clip_no_crop --sdes --md_fce --smdf`).
-- [ ] **1.5. Cập nhật tài liệu & Commit**
-  - Chạy skill `countzes-usage-docs` để cập nhật [USAGE.md](../USAGE.md) và `colab_run_fsc147.ipynb` (nếu cần).
-  - Commit code sạch qua `/commit`.
+- [x] **1.1. Hiện thực `SDES` (`--sdes`, `--sdes_iou_thr`, `--sdes_max_keep`, `--sdes_lambda_iou`, `--sdes_lambda_scale`)**
+  - Unit-prioritized Spatial NMS (`_sdes_select_indices`) trên `single_instance_boxes1` trước vòng `process_box` & KDE ở Stage 2, kèm `_sdes_diversity_factor` phạt trùng không gian (`DGE`, `FCE`) và thưởng bổ trợ tỷ lệ log-scale (`FCE`).
+  - Ghi nhận số box trước/sau SDES vào `predictions.csv` (`single1_pre_sdes_n -> single1_n`) và tiêu đề ô `S2b` trên `stage_samples`.
+- [x] **1.2. Hiện thực `MD-FCE` (`--md_fce`, `--md_fce_gamma`)**
+  - Giữ lại mask SAM ở Stage 2 (`dge_mask`) và Stage 3 (`masks_sam_new`, kèm `dae_mask`) thay vì bỏ vào `_`, kết hợp trọng số tâm mật độ `1 + gamma * norm_density` để pooling đặc trưng AnyUp sạch nền trong `box_to_featvec`.
+- [x] **1.3. Hiện thực `SMDF` (`--smdf`, `--smdf_sigma_u`, `--smdf_priors`)**
+  - Giữ đủ `density_raw_s2`, `density_raw_s3`, `density_raw_final` và hợp nhất cả tổng đếm lẫn bản đồ mật độ hiển thị qua `_smdf_fuse_stage_densities` theo $R_{\text{unit}}^{(s)} \cdot R_{\text{kde}}^{(s)}$.
+- [x] **1.4. Kiểm tra kỹ thuật (Local) & [ ] Smoke Test EC2**
+  - [x] `python -m py_compile` pass toàn bộ 7 file `.py` + unit test logic (`_sdes_select_indices`, `_sdes_diversity_factor`, `_smdf_fuse_stage_densities`, default parser flags = `False`).
+  - [ ] Chạy EC2 smoke `n=5` với tất cả cờ mới bật (`--single_instance_mode le1 --clip_sim_mode maskclip --clip_no_crop --sdes --md_fce --smdf`).
+- [x] **1.5. Cập nhật tài liệu (`USAGE.md` & skill schema) & [ ] Commit**
+  - [x] Đã cập nhật [USAGE.md](../USAGE.md) và `.agents/skills/countzes-usage-docs/SKILL.md` theo đúng parser mới.
+  - [ ] Commit code sạch qua `/commit`.
 
 ---
 
-## Lệnh kiểm tra nhanh trên EC2 sau khi code xong
+## Lệnh kiểm tra nhanh trên EC2 sau khi push & pull code
 
 ```bash
+cd ~/cv-advanced && git pull
 source /opt/pytorch/bin/activate
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 python -m py_compile countzes_core.py countzes_*.py
 
-python countzes_fsc147.py --data ./data --split test --fsoc DSALVANet \
+python countzes_fsc147.py --data ./data --split val --fsoc DSALVANet \
   --max_images 5 --sample_mode stratified --sample_seed 42 \
-  --clip_sim_mode maskclip --clip_no_crop \
+  --single_instance_mode le1 --clip_sim_mode maskclip --clip_no_crop \
   --sdes --md_fce --smdf --stage_samples -1 --visualize \
   --outdir ec2_smoke_all_proposals_n5
 ```

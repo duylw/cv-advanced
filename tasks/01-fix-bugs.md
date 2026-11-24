@@ -50,11 +50,15 @@
 
 ## P2 — Điểm thuật toán cần kiểm chứng A/B trên GPU
 
-- [ ] **11. Kiểm chứng A/B hai điểm logic có thể ảnh hưởng số đo paper**
-  - Đã tách sẵn 2 cờ CLI trong `countzes_core.py` (mặc định giữ nguyên hành vi gốc):
-    - `--fix_sses_inversion`: bỏ `1 - sim_clip` trong `SSES`.
+- [x] **11. Kiểm chứng A/B hai điểm logic có thể ảnh hưởng số đo paper**
+  - Đã tách sẵn 2 cờ CLI trong `countzes_core.py` (mặc định: `--fix_sses_inversion=True`, `--single_instance_mode="paper"`):
+    - `--fix_sses_inversion` vs `--github_sses_inversion`: bỏ vs giữ `1 - sim_clip` trong `SSES`.
     - `--single_instance_mode`: chọn `'paper'` (`1 < c < 2`), `'unit'` (`0.5 <= c <= 1.5`), hoặc `'le1'` (`0 < c <= 1.5`).
-  - Cần chạy đối chiếu trên subset nhỏ khi có GPU + weights/data.
+  - **Kết quả A/B trên EC2 (`FSC-147 val`, `n=29` stratified, `seed=42`, `DSALVANet`):**
+    - `github_inv` (`fix_sses_inversion=False`, `paper`): MAE `26.069` | RMSE `88.4405` (`9.853s/img`)
+    - `paper_anchor` (`fix_sses_inversion=True`, `paper`): MAE `23.4483` | RMSE `86.145` (`10.114s/img`)
+    - `unit` (`fix_sses_inversion=True`, `unit`): MAE `21.9655` | RMSE `85.6724` (`12.27s/img`)
+    - **`le1`** (`fix_sses_inversion=True`, `le1`): **MAE `20.2069` | RMSE `85.1988`** (`13.265s/img`) — tốt nhất cả MAE lẫn RMSE.
 
 ---
 

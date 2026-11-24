@@ -87,6 +87,10 @@ Tài liệu Markdown tạo ra nên có đủ 6 phần sau:
   - `--single_instance_mode` (default: `paper`, choices: `paper`, `unit`, `le1`): Bộ lọc RoI single-instance (`paper`: `1 < c < 2`, `unit`: `0.5 <= c <= 1.5`, `le1`: `0 < c <= 1.5`).
   - `--clip_sim_mode` (default: `raw`, choices: `raw`, `maskclip`): Chế độ trích bản đồ CLIP (`raw`: `last_hidden_state[:, 1:, :]`, `maskclip`: Value projection bỏ qua Q–K tầng cuối + `post_layernorm`).
   - `--clip_no_crop` (default: `False`): Resize toàn bộ ảnh về kích thước input của CLIP mà không center-crop ảnh chữ nhật.
+- **Đề xuất cải tiến (`CountZES+`, Training-Free, Opt-in):**
+  - `--sdes` (default: `False`): Bật SDES (Spatial NMS trước KDE ở Stage 2 + đa dạng hóa `DGE`/`FCE`), kèm `--sdes_iou_thr` (`0.55`), `--sdes_max_keep` (`15`), `--sdes_lambda_iou` (`0.6`), `--sdes_lambda_scale` (`0.15`).
+  - `--md_fce` (default: `False`): Bật MD-FCE (Mask- & Density-Attentive Feature Pooling cho Stage 3 FCE), kèm `--md_fce_gamma` (`1.0`).
+  - `--smdf` (default: `False`): Bật SMDF (hợp nhất mật độ `[Stage 2, Stage 3, Final]`), kèm `--smdf_sigma_u` (`0.5`), `--smdf_priors` (`[0.20, 0.25, 0.55]`).
 - **Visualization & Evidence:**
   - `--visualize` (default: `False`): Lưu ảnh density output cuối vào `outputs/<outdir>/<DATASET>/`.
   - `--stage_samples` (default: `5`): Số ảnh lưu lưới `2x4` từng bước vào `outputs/<outdir>/stage_samples/` (`-1` = lưu toàn bộ mẫu đã chạy, `0` = tắt).

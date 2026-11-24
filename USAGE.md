@@ -3,6 +3,7 @@
 Tài liệu tổng hợp toàn bộ cách chạy, các Colab notebooks, và **đầy đủ CLI options đang có sẵn** trong mã nguồn CountZES.
 
 > **Cập nhật gần nhất:**
+> - Thêm 3 phương pháp cải tiến training-free (`CountZES+`) dạng opt-in trong `countzes_core.py`: `--sdes` (kèm `--sdes_iou_thr`, `--sdes_max_keep`, `--sdes_lambda_iou`, `--sdes_lambda_scale`), `--md_fce` (kèm `--md_fce_gamma`), và `--smdf` (kèm `--smdf_sigma_u`, `--smdf_priors`).
 > - Thêm `--clip_sim_mode {raw,maskclip}` và `--clip_no_crop` trong `countzes_core.py` để sửa lỗi nền của CLIP tầng cuối và lỗi center-crop ảnh chữ nhật.
 > - Thêm `--split {test,val}` trong `countzes_fsc147.py` cùng `--sample_mode {first,stratified,random}`, `--sample_seed`, `--stage_samples -1`, và `per_class_metrics` trong `summary.json`.
 > - Thêm notebook riêng `colab_run_fsc147.ipynb` để chạy và phân tích đa lớp trên FSC-147.
@@ -61,7 +62,21 @@ Tài liệu tổng hợp toàn bộ cách chạy, các Colab notebooks, và **đ
 | `--clip_sim_mode` | `raw` | `raw`, `maskclip` | `raw`: lấy `last_hidden_state[:, 1:, :]` gốc; `maskclip`: trích Value projection tầng cuối + `post_layernorm` (tránh trộn nền $Q\text{-}K$). |
 | `--clip_no_crop` | `False` | Cờ boolean | Resize toàn ảnh về kích thước input của CLIP (`224x224`) mà không center-crop mất 2 rìa ảnh chữ nhật. |
 
-### D. Nhóm Lưu Log, Hình ảnh & Bằng chứng
+### D. Nhóm Đề xuất Cải tiến (`CountZES+`, Training-Free, Opt-in)
+| Flag | Mặc định | Giá trị hợp lệ | Chức năng |
+| :--- | :--- | :--- | :--- |
+| `--sdes` | `False` | Cờ boolean | Bật **SDES**: Spatial NMS trước KDE ở Stage 2 + phạt trùng vị trí & thưởng đa dạng tỷ lệ cho `DGE`/`FCE`. |
+| `--sdes_iou_thr` | `0.55` | Số thực `(0, 1]` | Ngưỡng IoU cho NMS theo độ gần đơn vị ở Stage 2 khi bật `--sdes`. |
+| `--sdes_max_keep` | `15` | Số nguyên | Số hộp ứng viên tối đa giữ lại sau NMS trước khi chạy Counter/KDE (`<= 0` giữ toàn bộ). |
+| `--sdes_lambda_iou` | `0.6` | Số thực | Trọng số phạt chồng lấn không gian với exemplar đã chọn trước đó (`[DAE]` / `[DAE, DGE]`). |
+| `--sdes_lambda_scale` | `0.15` | Số thực | Trọng số thưởng bổ trợ kích thước log-scale khi chọn `FCE` ở Stage 3. |
+| `--md_fce` | `False` | Cờ boolean | Bật **MD-FCE**: pooling đặc trưng AnyUp theo mặt nạ SAM + lõi mật độ thay vì trung bình hình chữ nhật. |
+| `--md_fce_gamma` | `1.0` | Số thực | Hệ số trọng số lõi mật độ `1 + gamma * norm_density` bên trong `--md_fce`. |
+| `--smdf` | `False` | Cờ boolean | Bật **SMDF**: hợp nhất bản đồ mật độ `[Stage 2, Stage 3, Final]` theo độ tự nhất quán đơn vị & KDE. |
+| `--smdf_sigma_u` | `0.5` | Số thực `> 0` | Độ rộng Gaussian quanh `1.0` cho điểm tự nhất quán exemplar trong `--smdf`. |
+| `--smdf_priors` | `0.20 0.25 0.55` | 3 số thực | Trọng số tiên nghiệm `[Stage2_DAE, Stage3_DGE, Final_3Shot]` cho `--smdf`. |
+
+### E. Nhóm Lưu Log, Hình ảnh & Bằng chứng
 | Flag | Mặc định | Giá trị hợp lệ | Chức năng |
 | :--- | :--- | :--- | :--- |
 | `--visualize` | `False` | Cờ boolean | Lưu ảnh density map kết quả cuối (`refined_*.png` / `<id>.png`) vào `outputs/<outdir>/`. |
@@ -115,6 +130,17 @@ python countzes_fsc147.py \
   --data ./data --split val --fsoc DSALVANet \
   --outdir fsc147_val_stratified_n58 \
   --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --visualize --stage_samples 15
+```
+
+### Preset 6 — CountZES+ Full (MaskCLIP + No-Crop + `le1` + SDES + MD-FCE + SMDF)
+```bash
+python countzes_fsc147.py \
+  --data ./data --split val --fsoc DSALVANet \
+  --outdir fsc147_val_countzes_plus_n58 \
+  --max_images 58 --sample_mode stratified --sample_seed 42 \
+  --single_instance_mode le1 --clip_sim_mode maskclip --clip_no_crop \
+  --sdes --md_fce --smdf \
   --visualize --stage_samples 15
 ```
 
