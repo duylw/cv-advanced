@@ -166,6 +166,68 @@ def build_argument_parser(
         default=5,
         help="Number of images for which to save 2x4 stage-by-stage PNGs in outputs/<outdir>/stage_samples/ (-1 = save all).",
     )
+    parser.add_argument(
+        "--sdes",
+        action="store_true",
+        default=False,
+        help="Enable Spatial-Scale Diverse Exemplar Selection (SDES: Stage 2 spatial NMS + DGE/FCE diversity scoring).",
+    )
+    parser.add_argument(
+        "--sdes_iou_thr",
+        type=float,
+        default=0.55,
+        help="IoU threshold for unit-prioritized spatial NMS in SDES Stage 2.",
+    )
+    parser.add_argument(
+        "--sdes_max_keep",
+        type=int,
+        default=15,
+        help="Max spatially deduplicated candidate boxes kept before Stage 2 KDE (<=0 keeps all).",
+    )
+    parser.add_argument(
+        "--sdes_lambda_iou",
+        type=float,
+        default=0.6,
+        help="Spatial overlap penalty weight against prior exemplars in SDES.",
+    )
+    parser.add_argument(
+        "--sdes_lambda_scale",
+        type=float,
+        default=0.15,
+        help="Log-scale complementarity bonus weight when selecting FCE in SDES Stage 3.",
+    )
+    parser.add_argument(
+        "--md_fce",
+        action="store_true",
+        default=False,
+        help="Enable Mask- & Density-Attentive Feature Pooling (MD-FCE) for Stage 3 FCE clustering.",
+    )
+    parser.add_argument(
+        "--md_fce_gamma",
+        type=float,
+        default=1.0,
+        help="Density-core attention weight (1 + gamma * norm_density) inside MD-FCE.",
+    )
+    parser.add_argument(
+        "--smdf",
+        action="store_true",
+        default=False,
+        help="Enable Self-Consistent Multi-Stage Density Fusion (SMDF) across Stage 2, Stage 3, and Final.",
+    )
+    parser.add_argument(
+        "--smdf_sigma_u",
+        type=float,
+        default=0.5,
+        help="Gaussian width around 1.0 for unit-exemplar self-consistency in SMDF.",
+    )
+    parser.add_argument(
+        "--smdf_priors",
+        type=float,
+        nargs=3,
+        default=[0.20, 0.25, 0.55],
+        metavar=("W_S2", "W_S3", "W_FINAL"),
+        help="Stage prior weights [Stage2_DAE, Stage3_DGE, Final_3Shot] for SMDF.",
+    )
     return parser
 
 
@@ -380,6 +442,138 @@ def _box_count_from_density(box, density_map: np.ndarray) -> float:
     return float(density_map[y0 : y1 + 1, x0 : x1 + 1].sum())
 
 
+def _box_area_xyxy(box) -> float:
+    w = max(0, int(box[2]) - int(box[0]))
+    h = max(0, int(box[3]) - int(box[1]))
+    return float(max(1, w * h))
+
+
+def _box_iou_xyxy(box_a, box_b) -> float:
+    ax0, ay0, ax1, ay1 = map(int, box_a)
+    bx0, by0, bx1, by1 = map(int, box_b)
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    inter = float(max(0, ix1 - ix0) * max(0, iy1 - iy0))
+    if inter <= 0.0:
+        return 0.0
+    return inter / (_box_area_xyxy(box_a) + _box_area_xyxy(box_b) - inter + 1e-8)
+
+
+def _sdes_select_indices(
+    boxes: List[List[int]],
+    density_map: np.ndarray,
+    iou_thr: float = 0.55,
+    max_keep: int = 15,
+) -> List[int]:
+    """Return indices of unit-prioritized spatially deduplicated candidate boxes (SDES)."""
+    if len(boxes) <= 1:
+        return list(range(len(boxes)))
+    order = sorted(
+        range(len(boxes)),
+        key=lambda i: abs(_box_count_from_density(boxes[i], density_map) - 1.0),
+    )
+    kept_idx: List[int] = []
+    for idx in order:
+        b = boxes[idx]
+        if (int(b[2]) - int(b[0])) <= 1 or (int(b[3]) - int(b[1])) <= 1:
+            continue
+        if all(_box_iou_xyxy(b, boxes[k]) < iou_thr for k in kept_idx):
+            kept_idx.append(idx)
+            if max_keep > 0 and len(kept_idx) >= max_keep:
+                break
+    return kept_idx if kept_idx else [order[0]]
+
+
+def _sdes_diversity_factor(
+    cand_box,
+    prev_boxes: List[List[int]],
+    lambda_iou: float = 0.6,
+    lambda_scale: float = 0.15,
+    use_scale: bool = False,
+) -> float:
+    """Compute spatial overlap penalty and optional log-scale complementarity bonus (SDES)."""
+    if not prev_boxes:
+        return 1.0
+    max_iou = max(_box_iou_xyxy(cand_box, e) for e in prev_boxes)
+    spatial_term = max(0.1, 1.0 - float(lambda_iou) * max_iou)
+    if not use_scale:
+        return spatial_term
+    cand_area = _box_area_xyxy(cand_box)
+    min_log_ratio = min(
+        abs(math.log((cand_area + 1e-5) / (_box_area_xyxy(e) + 1e-5)))
+        for e in prev_boxes
+    )
+    scale_term = 1.0 + float(lambda_scale) * min(1.0, min_log_ratio)
+    return spatial_term * scale_term
+
+
+def _smdf_fuse_stage_densities(
+    stage_records: List[Tuple[float, np.ndarray, List[List[int]], float]],
+    pseudo_gt_kde: float,
+    sam_box_counts: List[int],
+    sigma_u: float = 0.5,
+):
+    """Fuse multi-stage counts and density maps via exemplar unit-consistency & KDE consensus."""
+    valid_kde = [float(c) for c in sam_box_counts if c >= 0]
+    sigma_kde = float(np.std(valid_kde)) if len(valid_kde) > 1 else 1.0
+    sigma_kde = max(sigma_kde, 0.15 * abs(float(pseudo_gt_kde)), 2.0)
+    sigma_u = max(float(sigma_u), 1e-3)
+
+    raw_weights: List[float] = []
+    counts: List[float] = []
+    for cnt, dens_raw, boxes_xyxy, prior_w in stage_records:
+        c_val = float(cnt)
+        counts.append(c_val)
+        if dens_raw is not None and boxes_xyxy:
+            ex_counts = [_box_count_from_density(b, dens_raw) for b in boxes_xyxy]
+            mean_ex_c = float(np.mean(ex_counts))
+        else:
+            mean_ex_c = 1.0
+
+        r_unit = math.exp(-((mean_ex_c - 1.0) ** 2) / (2.0 * (sigma_u ** 2)))
+        r_kde = math.exp(
+            -((c_val - float(pseudo_gt_kde)) ** 2) / (2.0 * (sigma_kde ** 2) + 1e-8)
+        )
+        raw_weights.append(float(prior_w) * r_unit * r_kde + 1e-6)
+
+    w_sum = sum(raw_weights)
+    norm_w = [w / w_sum for w in raw_weights]
+    fused_val = sum(w * c for w, c in zip(norm_w, counts))
+    if all(isinstance(r[0], (int, np.integer)) for r in stage_records):
+        fused_count = int(round(fused_val))
+    else:
+        fused_count = round(fused_val, 2)
+
+    fused_density_raw = None
+    dens_list = [r[1] for r in stage_records]
+    if dens_list and all(d is not None for d in dens_list):
+        base_shape = dens_list[-1].shape
+        if all(d.shape == base_shape for d in dens_list):
+            fused_density_raw = float(norm_w[0]) * dens_list[0].astype(np.float32)
+            for w, d in zip(norm_w[1:], dens_list[1:]):
+                fused_density_raw = fused_density_raw + float(w) * d.astype(np.float32)
+    return fused_count, norm_w, fused_density_raw
+
+
+def _render_density_overlay_bgr(
+    src_img_bgr: np.ndarray,
+    boxes_xyxy: List[List[int]],
+    density_raw_hw: np.ndarray,
+) -> np.ndarray:
+    """Render BGR density overlay matching vis_DSALVANet/vis_countr aesthetics."""
+    d = density_raw_hw.astype(np.float32)
+    d_norm = (d - d.min()) / (d.max() - d.min() + 1e-8)
+    d_3c = np.stack((d_norm,) * 3, axis=-1)
+    scoremap = cv2.applyColorMap((d_3c * 255).astype(np.uint8), cv2.COLORMAP_JET)
+    scoremap = cv2.cvtColor(scoremap, cv2.COLOR_BGR2RGB)
+    blended = (0.5 * np.asarray(src_img_bgr, dtype=float) + 0.5 * scoremap).astype(np.uint8)
+    output_bgr = cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+    for b in boxes_xyxy:
+        x0, y0, x1, y1 = [int(v) for v in b]
+        cv2.rectangle(output_bgr, (x0, y0), (x1, y1), (0, 255, 255), 2)
+    return output_bgr
+
+
 def _to_imagenet_tensor(img_rgb_uint8: np.ndarray, device: torch.device) -> torch.Tensor:
     assert img_rgb_uint8.ndim == 3 and img_rgb_uint8.shape[2] == 3
     t = torch.from_numpy(img_rgb_uint8).float().permute(2, 0, 1).unsqueeze(0) / 255.0
@@ -529,7 +723,7 @@ def run_countzes_on_image(
     # Stage 2: Density Guided Exemplar (DGE)
     # ==================================================
     ori_boxes = [[y0, x0, y1, x1]]
-    _, count_stage2, density_pred, density_raw = _run_counter(
+    _, count_stage2, density_pred, density_raw_s2 = _run_counter(
         args.fsoc, counter_model, src_img, image_path, ori_boxes, filename, device
     )
     density_stage2 = density_pred.copy() if return_debug else None
@@ -539,7 +733,7 @@ def run_countzes_on_image(
     point_prompts = filter_peak_prompts(peaks, detections)
 
     _restore_sam_cache(predictor, sam_cache)
-    _, box_list_sam = get_masks_and_boxes(
+    masks_sam_s2, box_list_sam = get_masks_and_boxes(
         predictor, test_image, point_prompts, image_cached=True
     )
     box_list_det = [
@@ -547,16 +741,37 @@ def run_countzes_on_image(
         for (bx0, by0, bx1, by1) in detections.xyxy
     ]
     box_list = box_list_sam + box_list_det + [dae]
+    box_masks_s2 = list(masks_sam_s2) + [None] * len(box_list_det) + [dae_mask]
 
-    counts_per_box = [_box_count_from_density(b, density_raw) for b in box_list]
-    single_instance_boxes1 = [
-        b
-        for b, c in zip(box_list, counts_per_box)
+    counts_per_box = [_box_count_from_density(b, density_raw_s2) for b in box_list]
+    single1_indices = [
+        i
+        for i, c in enumerate(counts_per_box)
         if _is_single_instance(c, args.single_instance_mode)
     ]
-    if not single_instance_boxes1:
+    if not single1_indices:
         print("[Warning] No single-instance boxes found. Falling back to all boxes.")
-        single_instance_boxes1 = box_list
+        single1_indices = list(range(len(box_list)))
+
+    single_instance_boxes1 = [box_list[i] for i in single1_indices]
+    single_instance_masks1 = [box_masks_s2[i] for i in single1_indices]
+    single1_pre_sdes_n = len(single_instance_boxes1)
+
+    use_sdes = bool(getattr(args, "sdes", False))
+    sdes_iou_thr = float(getattr(args, "sdes_iou_thr", 0.55))
+    sdes_max_keep = int(getattr(args, "sdes_max_keep", 15))
+    sdes_lambda_iou = float(getattr(args, "sdes_lambda_iou", 0.6))
+    sdes_lambda_scale = float(getattr(args, "sdes_lambda_scale", 0.15))
+
+    if use_sdes:
+        kept_idx = _sdes_select_indices(
+            single_instance_boxes1,
+            density_raw_s2,
+            iou_thr=sdes_iou_thr,
+            max_keep=sdes_max_keep,
+        )
+        single_instance_boxes1 = [single_instance_boxes1[i] for i in kept_idx]
+        single_instance_masks1 = [single_instance_masks1[i] for i in kept_idx]
 
     # Sequential execution on GPU avoids thread contention and keeps inference safe
     sam_box_count = [
@@ -582,7 +797,14 @@ def run_countzes_on_image(
         alpha * c_close + (1 - alpha) * (1 - e)
         for c_close, e in zip(closeness_norm, norm_entropy)
     ]
-    dge = single_instance_boxes1[int(np.argmax(scores))]
+    if use_sdes:
+        scores = [
+            s * _sdes_diversity_factor(b, [dae], lambda_iou=sdes_lambda_iou, use_scale=False)
+            for s, b in zip(scores, single_instance_boxes1)
+        ]
+    dge_idx = int(np.argmax(scores))
+    dge = single_instance_boxes1[dge_idx]
+    dge_mask = single_instance_masks1[dge_idx]
 
     # ==================================================
     # Stage 3: Feature Consensus Exemplar (FCE)
@@ -592,7 +814,7 @@ def run_countzes_on_image(
     dge_box = [[y0, x0, y1, x1]]
 
     sim_up_dge = _compute_sam_sim_up(predictor, sam_cache, test_image, dge)
-    _, count_stage3, density_pred, density_raw = _run_counter(
+    _, count_stage3, density_pred, density_raw_s3 = _run_counter(
         args.fsoc, counter_model, src_img, image_path, dge_box, filename, device
     )
     density_stage3 = density_pred.copy() if return_debug else None
@@ -602,34 +824,40 @@ def run_countzes_on_image(
     point_prompts2 = filter_peak_prompts(peaks2, detections)
 
     _restore_sam_cache(predictor, sam_cache)
-    _, box_list_sam_new = get_masks_and_boxes(
+    masks_sam_new, box_list_sam_new = get_masks_and_boxes(
         predictor, test_image, point_prompts2, image_cached=True
     )
     box_list_sam_new.append(dae)
     box_list_sam_new.append(dge)
+    masks_stage3_all = list(masks_sam_new) + [dae_mask, dge_mask]
 
     def _contains(box_a, box_b) -> bool:
         ax0, ay0, ax1, ay1 = box_a
         bx0, by0, bx1, by1 = box_b
         return ax0 <= bx0 and ay0 <= by0 and ax1 >= bx1 and ay1 >= by1
 
-    filtered_boxes = []
-    for i, box_a in enumerate(box_list_sam_new):
-        if not any(i != j and _contains(box_a, box_b) for j, box_b in enumerate(box_list_sam_new)):
-            filtered_boxes.append(box_a)
-    if not filtered_boxes:
+    filtered_indices = [
+        i
+        for i, box_a in enumerate(box_list_sam_new)
+        if not any(i != j and _contains(box_a, box_b) for j, box_b in enumerate(box_list_sam_new))
+    ]
+    if not filtered_indices:
         print("[Warning] All boxes were filtered as containers. Falling back to original list.")
-        filtered_boxes = box_list_sam_new
+        filtered_indices = list(range(len(box_list_sam_new)))
+    filtered_boxes = [box_list_sam_new[i] for i in filtered_indices]
+    filtered_masks = [masks_stage3_all[i] for i in filtered_indices]
 
-    counts_per_box = [_box_count_from_density(b, density_raw) for b in filtered_boxes]
-    single_instance_boxes = [
-        b
-        for b, c in zip(filtered_boxes, counts_per_box)
+    counts_per_box = [_box_count_from_density(b, density_raw_s3) for b in filtered_boxes]
+    single2_indices = [
+        i
+        for i, c in enumerate(counts_per_box)
         if _is_single_instance(c, args.single_instance_mode)
     ]
-    if not single_instance_boxes:
+    if not single2_indices:
         print("[Warning] No single-instance boxes found. Falling back to all boxes.")
-        single_instance_boxes = filtered_boxes
+        single2_indices = list(range(len(filtered_boxes)))
+    single_instance_boxes = [filtered_boxes[i] for i in single2_indices]
+    single_instance_masks = [filtered_masks[i] for i in single2_indices]
 
     _restore_sam_cache(predictor, sam_cache)
     full_feat = predictor.features.squeeze(0)
@@ -644,7 +872,15 @@ def run_countzes_on_image(
         ).squeeze(0).contiguous()
     _, h_hr, w_hr = hr_features.shape
 
-    def box_to_featvec(box_xyxy) -> torch.Tensor:
+    use_md_fce = bool(getattr(args, "md_fce", False))
+    md_fce_gamma = float(getattr(args, "md_fce_gamma", 1.0))
+    dens_hr_t = None
+    if use_md_fce:
+        dens_norm = normalize_sim_map(density_raw_s3.astype(np.float32))
+        dens_hr = cv2.resize(dens_norm, (w_hr, h_hr), interpolation=cv2.INTER_LINEAR)
+        dens_hr_t = torch.from_numpy(dens_hr).to(device=device, dtype=hr_features.dtype)
+
+    def box_to_featvec(box_xyxy, mask_hw: Optional[np.ndarray] = None) -> torch.Tensor:
         bx0, by0, bx1, by1 = _clamp_box_xyxy(box_xyxy, W, H)
         fx0 = int(round(bx0 * (w_hr / float(W))))
         fx1 = int(round(bx1 * (w_hr / float(W))))
@@ -656,11 +892,32 @@ def run_countzes_on_image(
         fy1 = max(fy0 + 1, min(h_hr, fy1))
 
         region = hr_features[:, fy0:fy1, fx0:fx1]
-        vec = region.reshape(C, -1).mean(dim=1)
+        if not use_md_fce:
+            vec = region.reshape(C, -1).mean(dim=1)
+            return vec / (vec.norm(p=2) + 1e-8)
+
+        rh, rw = region.shape[1], region.shape[2]
+        weight_patch = 1.0 + md_fce_gamma * dens_hr_t[fy0:fy1, fx0:fx1]
+        if mask_hw is not None:
+            mask_crop = mask_hw[by0:by1, bx0:bx1].astype(np.float32)
+            if mask_crop.size > 0 and mask_crop.sum() > 0:
+                mask_rsz = cv2.resize(mask_crop, (rw, rh), interpolation=cv2.INTER_NEAREST)
+                mask_t = torch.from_numpy(mask_rsz).to(device=device, dtype=hr_features.dtype)
+                if mask_t.sum() > 0:
+                    weight_patch = weight_patch * mask_t
+
+        w_flat = weight_patch.reshape(1, -1)
+        reg_flat = region.reshape(C, -1)
+        vec = (reg_flat * w_flat).sum(dim=1) / (w_flat.sum() + 1e-8)
         return vec / (vec.norm(p=2) + 1e-8)
 
     with torch.no_grad():
-        vecs = torch.stack([box_to_featvec(b) for b in single_instance_boxes])
+        vecs = torch.stack(
+            [
+                box_to_featvec(b, m)
+                for b, m in zip(single_instance_boxes, single_instance_masks)
+            ]
+        )
     if vecs.shape[0] == 1:
         fce = single_instance_boxes[0]
         kmeans_labels = [0]
@@ -690,16 +947,56 @@ def run_countzes_on_image(
         majority = int(torch.argmax(sizes))
         maj_idx = (labels == majority).nonzero(as_tuple=False).squeeze(1)
         sims_to_centroid = vecs[maj_idx] @ centroids[majority]
-        fce = single_instance_boxes[int(maj_idx[int(torch.argmax(sims_to_centroid))])]
+        if use_sdes:
+            div_factors = torch.tensor(
+                [
+                    _sdes_diversity_factor(
+                        single_instance_boxes[int(idx_m)],
+                        [dae, dge],
+                        lambda_iou=sdes_lambda_iou,
+                        lambda_scale=sdes_lambda_scale,
+                        use_scale=True,
+                    )
+                    for idx_m in maj_idx
+                ],
+                device=sims_to_centroid.device,
+                dtype=sims_to_centroid.dtype,
+            )
+            base_sims = torch.clamp(sims_to_centroid, min=0.0)
+            fce_scores = base_sims * div_factors if float(base_sims.max()) > 0 else sims_to_centroid
+            best_maj_pos = int(torch.argmax(fce_scores))
+        else:
+            best_maj_pos = int(torch.argmax(sims_to_centroid))
+        fce = single_instance_boxes[int(maj_idx[best_maj_pos])]
         kmeans_labels = labels.detach().cpu().tolist()
 
     # Final counting with [dae, dge, fce]
     fce = [int(v) for v in fce]
     boxes = [dae, dge, fce]
     ori_boxes = [[int(b[1]), int(b[0]), int(b[3]), int(b[2])] for b in map(np.array, boxes)]
-    vis_output, count, _, _ = _run_counter(
+    vis_output, count_final_raw, _, density_raw_final = _run_counter(
         args.fsoc, counter_model, src_img, image_path, ori_boxes, filename, device
     )
+    count = count_final_raw
+    smdf_weights = None
+    if bool(getattr(args, "smdf", False)):
+        priors = list(getattr(args, "smdf_priors", [0.20, 0.25, 0.55]))
+        if len(priors) != 3:
+            priors = [0.20, 0.25, 0.55]
+        smdf_sigma_u = float(getattr(args, "smdf_sigma_u", 0.5))
+        stage_records = [
+            (count_stage2, density_raw_s2, [dae], float(priors[0])),
+            (count_stage3, density_raw_s3, [dge], float(priors[1])),
+            (count_final_raw, density_raw_final, [dae, dge, fce], float(priors[2])),
+        ]
+        count, smdf_weights, fused_density_raw = _smdf_fuse_stage_densities(
+            stage_records,
+            pseudo_gt_kde=pseudo_gt_count,
+            sam_box_counts=sam_box_count,
+            sigma_u=smdf_sigma_u,
+        )
+        if fused_density_raw is not None:
+            vis_output = _render_density_overlay_bgr(src_img, boxes, fused_density_raw)
 
     debug_info = None
     if return_debug:
@@ -708,6 +1005,9 @@ def run_countzes_on_image(
             "sim_clip": sim_clip,
             "clip_sim_mode": clip_sim_mode,
             "clip_no_crop": clip_no_crop,
+            "sdes": use_sdes,
+            "md_fce": use_md_fce,
+            "smdf": bool(getattr(args, "smdf", False)),
             "gdino_boxes": detections.xyxy.tolist(),
             "gdino_confs": detections.confidence.tolist(),
             "initial_box": initial_box,
@@ -718,6 +1018,7 @@ def run_countzes_on_image(
             "count_stage2": count_stage2,
             "point_prompts_stage2": point_prompts,
             "box_list_stage2": box_list,
+            "single1_pre_sdes_n": single1_pre_sdes_n,
             "single_instance_boxes1": single_instance_boxes1,
             "sam_box_count": sam_box_count,
             "pseudo_gt_count": pseudo_gt_count,
@@ -730,6 +1031,8 @@ def run_countzes_on_image(
             "single_instance_boxes": single_instance_boxes,
             "kmeans_labels": kmeans_labels,
             "fce": fce,
+            "count_final_raw": count_final_raw,
+            "smdf_weights": smdf_weights,
             "final_count": count,
         }
 
@@ -1225,7 +1528,13 @@ def save_stage_diagnostic_grid(
     axes[0, 3].set_title(f"S2a. Density(DAE)={dbg['count_stage2']} + P2P ({len(dbg['point_prompts_stage2'])})")
 
     axes[1, 0].imshow(vis_s2b)
-    axes[1, 0].set_title(f"S2b. GGES (KDE->{dbg['pseudo_gt_count']}) -> DGE (blue)")
+    s2_tag = (
+        f"SDES {dbg.get('single1_pre_sdes_n', len(dbg['single_instance_boxes1']))}"
+        f"->{len(dbg['single_instance_boxes1'])}, "
+        if dbg.get("sdes", False)
+        else ""
+    )
+    axes[1, 0].set_title(f"S2b. GGES ({s2_tag}KDE->{dbg['pseudo_gt_count']}) -> DGE (blue)")
 
     axes[1, 1].imshow(img_rgb)
     axes[1, 1].imshow(dbg["density_stage3"], cmap="jet", alpha=0.5)
@@ -1235,10 +1544,22 @@ def save_stage_diagnostic_grid(
     axes[1, 1].set_title(f"S3a. Density(DGE)={dbg['count_stage3']} + P2P ({len(dbg['point_prompts_stage3'])})")
 
     axes[1, 2].imshow(vis_s3b)
-    axes[1, 2].set_title(f"S3b. FRES 2-Means ({len(dbg['single_instance_boxes'])}) -> FCE (red)")
+    s3_flags = [
+        name
+        for name, enabled in (("MD-FCE", dbg.get("md_fce", False)), ("SDES", dbg.get("sdes", False)))
+        if enabled
+    ]
+    s3_tag = f"[{'+'.join(s3_flags)}] " if s3_flags else ""
+    axes[1, 2].set_title(f"S3b. FRES {s3_tag}2-Means ({len(dbg['single_instance_boxes'])}) -> FCE (red)")
 
     axes[1, 3].imshow(cv2.cvtColor(vis_output_bgr, cv2.COLOR_BGR2RGB))
-    axes[1, 3].set_title(f"Final [DAE,DGE,FCE] -> Pred={pred_count} | GT={gt_count}")
+    if dbg.get("smdf", False) and dbg.get("smdf_weights"):
+        w_str = "/".join(f"{w:.2f}" for w in dbg["smdf_weights"])
+        axes[1, 3].set_title(
+            f"Final SMDF [{w_str}] raw={dbg.get('count_final_raw')} -> Pred={pred_count} | GT={gt_count}"
+        )
+    else:
+        axes[1, 3].set_title(f"Final [DAE,DGE,FCE] -> Pred={pred_count} | GT={gt_count}")
 
     for ax in axes.flat:
         ax.axis("off")
@@ -1369,6 +1690,9 @@ def run_recorded_evaluation(
                 "fsoc": getattr(args, "fsoc", None),
                 "fix_sses_inversion": getattr(args, "fix_sses_inversion", False),
                 "single_instance_mode": getattr(args, "single_instance_mode", "paper"),
+                "sdes": getattr(args, "sdes", False),
+                "md_fce": getattr(args, "md_fce", False),
+                "smdf": getattr(args, "smdf", False),
             },
         ) as eval_mon:
             for idx, sample in enumerate(tqdm(samples, desc=dataset_name)):
@@ -1397,6 +1721,7 @@ def run_recorded_evaluation(
                     "count_stage2": None,
                     "p2p_stage2_n": None,
                     "sam_boxes_stage2_n": None,
+                    "single1_pre_sdes_n": None,
                     "single1_n": None,
                     "pseudo_gt_kde": None,
                     "dge": None,
@@ -1405,6 +1730,8 @@ def run_recorded_evaluation(
                     "filtered_n": None,
                     "single2_n": None,
                     "fce": None,
+                    "count_final_raw": None,
+                    "smdf_weights": None,
                 }
                 try:
                     vis_output, count, dbg = run_countzes_on_image(
@@ -1457,6 +1784,7 @@ def run_recorded_evaluation(
                             "count_stage2": dbg["count_stage2"],
                             "p2p_stage2_n": len(dbg["point_prompts_stage2"]),
                             "sam_boxes_stage2_n": len(dbg["box_list_stage2"]),
+                            "single1_pre_sdes_n": dbg["single1_pre_sdes_n"],
                             "single1_n": len(dbg["single_instance_boxes1"]),
                             "pseudo_gt_kde": dbg["pseudo_gt_count"],
                             "dge": dbg["dge"],
@@ -1465,6 +1793,12 @@ def run_recorded_evaluation(
                             "filtered_n": len(dbg["filtered_boxes"]),
                             "single2_n": len(dbg["single_instance_boxes"]),
                             "fce": dbg["fce"],
+                            "count_final_raw": dbg["count_final_raw"],
+                            "smdf_weights": (
+                                [round(float(w), 4) for w in dbg["smdf_weights"]]
+                                if dbg.get("smdf_weights") is not None
+                                else None
+                            ),
                         }
                     )
                     del dbg, vis_output
@@ -1515,6 +1849,11 @@ def run_recorded_evaluation(
             "sam_type": getattr(args, "sam_type", None),
             "fix_sses_inversion": getattr(args, "fix_sses_inversion", False),
             "single_instance_mode": getattr(args, "single_instance_mode", "paper"),
+            "clip_sim_mode": getattr(args, "clip_sim_mode", "raw"),
+            "clip_no_crop": getattr(args, "clip_no_crop", False),
+            "sdes": getattr(args, "sdes", False),
+            "md_fce": getattr(args, "md_fce", False),
+            "smdf": getattr(args, "smdf", False),
             "sample_mode": sample_mode,
             "sample_seed": sample_seed,
             "total_available_samples": total_available,
