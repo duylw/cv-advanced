@@ -1,6 +1,6 @@
 # Task 01: Sửa các bug trong pipeline CountZES & DSALVANet
 
-- **Trạng thái:** `READY_FOR_GPU_TEST` (Đã hoàn tất toàn bộ sửa code P0/P1 & `py_compile`; chờ test runtime trên máy có GPU + weights/data)
+- **Trạng thái:** `VERIFIED_DSALVANET` (Đã hoàn tất sửa code P0/P1, pass `py_compile` & smoke test runtime trên Colab/EC2 với `DSALVANet`; còn kiểm chứng `--fsoc countr` nếu sử dụng)
 - **Mục tiêu:** Khắc phục các lỗi crash, tràn VRAM, sai tọa độ feature, sai checkpoint và lỗi tổng hợp metric trên toàn bộ 5 script đánh giá (`countzes_fsc147.py`, `countzes_carpk.py`, `countzes_persense_D.py`, `countzes_mbm.py`, `countzes_vgg.py`) và các module phụ trợ trong `DSALVANet/`, `CounTR/`.
 
 ---
@@ -60,6 +60,7 @@
 
 ## Tiêu chí hoàn thành (Acceptance Criteria)
 - [x] Tất cả file `.py` đã sửa pass `python -m py_compile`.
-- [ ] Chạy thử được cả `--fsoc countr` và `--fsoc DSALVANet` kèm `--data`, `--outdir`, `--visualize` trên máy có GPU + weights/data.
-- [ ] Không còn lỗi `RuntimeError` do `eval()`/`no_grad()`/`float64`/`np.float` trên môi trường GPU thực tế.
+- [x] Chạy thử thực tế `--fsoc DSALVANet` kèm `--data`, `--outdir`, `--visualize` trên Colab (`VGG`, `FSC-147 n=29`) và EC2 (`FSC-147 n=5`, `5/5`).
+- [ ] Chạy thử kiểm chứng `--fsoc countr` trên máy có GPU + checkpoint CounTR (nếu dùng CounTR).
+- [x] Không còn lỗi `RuntimeError` do `eval()`/`no_grad()`/`float64`/`np.float` và tương thích `transformers >= 5.x` (`bertwarper.py`) trên môi trường GPU thực tế.
 - [x] Cập nhật xong các checkbox và trạng thái trong [tasks/PROGRESS.md](PROGRESS.md).
