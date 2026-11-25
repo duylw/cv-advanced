@@ -14,16 +14,14 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 ---
 
-## 2. Trạng thái Dataset trên EC2
+## 2. Trạng thái Dataset & Checkpoint trên EC2 (Đợt test hiện tại)
 
-| Dataset | Thư mục đích trên EC2 | Trạng thái | Ghi chú |
+| Artifact / Dataset | Thư mục đích trên EC2 | Trạng thái | Ghi chú |
 | :--- | :--- | :---: | :--- |
-| `FSC-147` | `data/FSC-147/images_384_VarV2` | ✅ Sẵn sàng | `val=1286`, `test=1190` |
-| `MBM` | `data/MBM/...` | ☐ Cần tải | 44 ảnh (~nhẹ, tải qua `gdown` / `scp` từ local) |
-| `VGG` | `data/VGG/...` | ☐ Cần tải | 200 ảnh (`countzes_vgg.py`) |
-| `CARPK` | `data/CARPK/...` | ☐ Cần tải | `test=459` (`countzes_carpk.py`) |
-
-*(Kiểm tra chính xác tên thư mục con mà `countzes_mbm.py`, `countzes_vgg.py`, `countzes_carpk.py` kỳ vọng trước khi giải nén.)*
+| `FSC-147` + `DSALVANet` | `data/FSC-147/images_384_VarV2`, `DSALVANet/checkpoints/checkpoint_200.pth` | ✅ Sẵn sàng | **Active** — In-domain (`test=1190`) |
+| `CounTR/CARPK.pth` | `CounTR/output_allnew_dir/CARPK.pth` | ☐ Cần `gdown` | **Active** — `FSC-147` Cross-domain (`1f0yy4pLAdtR7CL1OzMF123wiHgJ8KpPS`) |
+| `MBM` + `CounTR/FSC147.pth` | `data/mbm/Images/blood cells/`, `CounTR/output_allnew_dir/FSC147.pth` | ☐ Cần `gdown` | **Active** — `MBM` 44 ảnh (`1i54Hcw2GbCVp0Kz7jei2Lr7Cmi2DZkol`, `1CzYyiYqLshMdqJ9ZPFJyIzXBa7uFUIYZ`) |
+| `VGG` / `CARPK` | `data/vgg/Images/cells/`, `data/CARPK/` | *Tạm gác* | Chưa chạy ở đợt hiện tại |
 
 ---
 

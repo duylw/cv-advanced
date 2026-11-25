@@ -22,8 +22,9 @@ Hướng dẫn làm việc cho AI Agent và developer trong repository **CountZE
   - `GroundingDINO` và `SAM` (`SSES`, `get_masks_and_boxes`, `box_to_featvec`) dùng **`[x0, y0, x1, y1]`** (`xyxy`).
   - `DSALVANet/utils/data_preprocess.py` (`preprocess`) và `CounTR/demo.py` (`load_image`) mong đợi **`[y0, x0, y1, x1]`** (`yxyx`).
   - Khi sửa code, kiểm tra kỹ bước chuyển đổi `[x0, y0, x1, y1]` ↔ `[y0, x0, y1, x1]`.
-- **Bảo toàn hành vi thuật toán gốc:**
-  - Các điểm liên quan trực tiếp đến logic bài báo (như `sim_clip = 1 - sim_clip` trong `SSES` hay ngưỡng lọc `1 < c < 2`) **không tự ý thay đổi mặc định** nếu chưa được phép; nên tách thành flag/cấu hình để A/B test với bản gốc.
+- **Bảo toàn hành vi thuật toán gốc & Bộ Baseline cố định (chốt `2026-11-26`):**
+  - Các điểm liên quan trực tiếp đến logic bài báo (như `sim_clip = 1 - sim_clip` trong `SSES` hay ngưỡng lọc `1 < c < 2`) **không tự ý thay đổi mặc định** nếu chưa được phép; tách thành flag để kiểm soát rõ.
+  - **Quyết định baseline & phạm vi dataset (chốt `2026-11-26`):** Mọi thực nghiệm đối chiếu và phát triển cải tiến phương pháp từ Pha 3 trở đi dùng **bộ mặc định code GitHub gốc** làm nền cố định (`--box_threshold 0.20 --text_threshold 0.15 --sses_start_percentile 80 --github_sses_inversion --single_instance_mode paper --clip_sim_mode raw`), tập trung trên 3 track hiện tại: **`FSC-147 test` in-domain** (`--fsoc DSALVANet`), **`FSC-147 test` cross-domain** (`--fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/CARPK.pth`), và **`MBM` cross-domain** (`--fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/FSC147.pth`) *(tạm gác `VGG`, `CARPK`, `PerSense-D`)*.
 - **Git & Dung lượng:**
   - Tuyệt đối không commit model weights (`*.pth`, `*.pt`), dữ liệu ảnh trong `data/`, hoặc ảnh output trong `outputs/`.
 

@@ -1,34 +1,35 @@
 # Pha 3 — Ablation Study (100% Dataset)
 
-- **Mục tiêu:** Tạo bảng Ablation khoa học **100% toàn bộ tập dữ liệu (không lấy mẫu con)**, mỗi hàng chỉ thêm **đúng 1 thay đổi duy nhất** để cô lập đóng góp thực tế của từng thành phần đã qua cổng Pha 2.
-- **Chiến lược tiết kiệm GPU:** Chạy full bảng Ablation trước trên **`MBM` (44 ảnh, ~9–12p/run)** và **`VGG` (200 ảnh, ~35–55p/run)**, sau đó chạy ít nhất cặp đối chiếu cốt lõi (hoặc full bảng tùy tốc độ sau `SDES`) trên **`FSC-147 test` (1,190 ảnh)**.
-- **Trạng thái:** `PENDING` (chờ Pha 2)
+- **Mục tiêu:** Tạo bảng Ablation khoa học **100% toàn bộ tập dữ liệu (không lấy mẫu con)** trên **bộ nền mặc định GitHub gốc đã chốt (`2026-11-26`)**, tập trung trên 3 track hiện tại: **`MBM` (44, `countr + FSC147.pth`)**, **`FSC-147 test` In-domain (1,190, `DSALVANet`)**, và **`FSC-147 test` Cross-domain (1,190, `countr + CARPK.pth`)** *(tạm gác `VGG`, `CARPK`)*.
+- **Bộ cờ nền cố định cho mọi hàng `A0 → A3`:**
+  `--box_threshold 0.20 --text_threshold 0.15 --sses_start_percentile 80 --github_sses_inversion --single_instance_mode paper --clip_sim_mode raw`
+- **Chiến lược tiết kiệm GPU (`gpu-server` ~9–10.5s/img):**
+  1. Chạy trước trên **`MBM` (44 ảnh, ~7p/run)** — tổng ~28 phút cho 4 hàng, kiểm chứng nhanh trước.
+  2. Chạy trên **`FSC-147 test` (1,190 ảnh, ~3–3.4h/run)**: chạy In-domain (`DSALVANet`) và Cross-domain (`countr --countr_ckpt ./CounTR/output_allnew_dir/CARPK.pth`) cho `A0` → `A2` (thêm `A3` nếu `MD-FCE` thắng trên `MBM`).
+- **Trạng thái:** `NEXT`
 
 ---
 
-## Ma trận Ablation chuẩn (Mỗi bước +1 thay đổi duy nhất, cố định seed & tham số từ Pha 2)
+## Ma trận Ablation chuẩn (Nền cố định: GitHub Default `0.20 / 0.15 / 80 / --github_sses_inversion / paper`, bỏ `le1` & `SMDF`)
 
-| ID | Cấu hình | `le1` | `CLIP Fix` | `SDES` | `MD-FCE` | `SMDF` | `MBM` (44) | `VGG` (200) | `FSC-147 test` (1190) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `A0` | Paper Baseline (`paper`, `raw`) | ✗ | ✗ | ✗ | ✗ | ✗ | ☐ | ☐ *(Colab `51.765`; chạy EC2 nếu cần đồng bộ tốc độ)* | ☐ |
-| `A1` | `+ le1` *(hiệu chỉnh ngưỡng P2)* | ✓ | ✗ | ✗ | ✗ | ✗ | ☐ | ☐ | ☐ *(tùy budget)* |
-| `A2` | `+ CLIP Fix` (`MaskCLIP + No-Crop`) | ✓ | ✓ | ✗ | ✗ | ✗ | ☐ | ☐ | ☐ *(tùy budget)* |
-| `A3` | `+ SDES` *(Stage 2–3)* | ✓ | ✓ | ✓ | ✗ | ✗ | ☐ | ☐ | ☐ *(tùy budget)* |
-| `A4` | `+ MD-FCE` *(Stage 3)* | ✓ | ✓ | ✓ | ✓ | ✗ | ☐ | ☐ | ☐ *(tùy budget)* |
-| `A5` | **CountZES+ Full (`+ SMDF`)** | ✓ | ✓ | ✓ | ✓ | ✓ | ☐ | ☐ | ☐ |
-
-*(Ghi chú: Nếu ở Pha 2 Bước 2A có thành phần bị loại hoặc giữ lại `paper` thay vì `le1`, cập nhật lại bảng này trước khi bấm chạy full. Có thể bổ sung `A0 + module đơn lẻ` cho thành phần chủ lực nếu cần làm nổi bật thêm.)*
+| ID | Cấu hình | `CLIP Fix` (`MaskCLIP + No-Crop`) | `SDES` | `MD-FCE` (`gamma=0.0`) | `MBM` (44, `countr`) | `FSC-147` In-domain (`DSALVANet`) | `FSC-147` Cross-domain (`countr + CARPK.pth`) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `A0` | GitHub Baseline (`raw`, `0.20/80/github_inv`) | ✗ | ✗ | ✗ | ✅ `19.5864 / 37.1069` *(Colab `baseline_mbm_github`)* | ☐ | ☐ |
+| `A1` | `+ CLIP Fix` *(Stage 1)* | ✓ | ✗ | ✗ | ☐ | ☐ | ☐ |
+| `A2` | **`+ SDES` (`CountZES+ Core`)** *(Stage 2–3)* | ✓ | ✓ | ✗ | ☐ | ☐ | ☐ |
+| `A3` | `+ MD-FCE (g=0.0)` *(Stage 3 mask)* | ✓ | ✓ | ✓ | ☐ | ☐ *(nếu thắng trên `MBM`)* | ☐ *(nếu thắng trên `MBM`)* |
 
 ---
 
 ## Công việc chi tiết
 
-- [ ] **3.1. Chạy Full Ablation trên `MBM` (44 ảnh × 6 runs ≈ 1 giờ)**
-  - Dùng `countzes_mbm.py` với `--stage_samples -1 --visualize` (lưu toàn bộ 44 ảnh để phân tích sâu).
-- [ ] **3.2. Chạy Full Ablation trên `VGG` (200 ảnh × 5–6 runs ≈ 4.5 giờ)**
-  - Dùng `countzes_vgg.py` với `--stage_samples 15 --visualize` trong `tmux` (nhớ theo dõi `logs/resource_usage.log` và `s/img`).
-- [ ] **3.3. Quyết định phạm vi `FSC-147 test` (1,190 ảnh)**
-  - Tối thiểu: chạy `A0` (Baseline gốc) vs `A5` (**CountZES+ Full**) trên toàn bộ 1,190 ảnh `FSC-147 test`.
-  - Lý tưởng (nếu tốc độ sau `SDES` ~10–11s/img tức ~3.5h/run): chạy đủ các nấc `A0 → A5` trên `FSC-147 test`.
-- [ ] **3.4. Lưu lại `summary.json`, `predictions.csv`, `logs/resource_usage.log` cho từng run**
-  - Đặt tên `--outdir` nhất quán: `ablation_<dataset>_<A0|A1|A2|A3|A4|A5>`.
+- [ ] **3.1. Chuẩn bị `MBM` (44) & `CounTR/{FSC147,CARPK}.pth` trên `gpu-server`**
+  - Tải `mbm` (`data/mbm/Images/blood cells/`), `CounTR/output_allnew_dir/FSC147.pth`, `CounTR/output_allnew_dir/CARPK.pth` và pass smoke test `--max_images 1` cho cả 3 track.
+- [ ] **3.2. Hoàn tất Baseline `A0` cho 3 track**
+  - `MBM` đã xong trên Colab (`19.5864 / 37.1069`); chạy `A0` trên `FSC-147 test` In-domain (`DSALVANet`) và Cross-domain (`countr + CARPK.pth`).
+- [ ] **3.3. Chạy Ablation `A1 → A3` trên `MBM` (44 ảnh × 3 runs ≈ ~21 phút)**
+  - Dùng `--stage_samples -1 --visualize` để lưu toàn bộ 44 ảnh phân tích.
+- [ ] **3.4. Chạy Ablation `A1 → A2` (+ `A3` nếu thắng) trên `FSC-147 test` (In-domain & Cross-domain)**
+  - Chạy qua `tmux` + `bash scripts/ec2_idle_stop.sh --timeout 1800` với `--stage_samples 20`.
+- [ ] **3.5. Tổng hợp `summary.json`, `proposal_diagnostics`, `predictions.csv`, `logs/resource_usage.log`**
+  - Đặt tên `--outdir` nhất quán: `ablation_<track>_<A0|A1|A2|A3>`.

@@ -1,30 +1,29 @@
-# Pha 4 — Main Benchmark đa miền (3 Domain)
+# Pha 4 — Main Benchmark (3 Track đang chốt)
 
-- **Mục tiêu:** Đánh giá sức mạnh tổng quát (generalization) của **CountZES (Reproduced Baseline)** vs **CountZES + Ours (Full)** trên đầy đủ các domain của paper (tuyệt đối không tune lại tham số ở pha này).
+- **Mục tiêu:** Đánh giá sức mạnh **Baseline vs Ours (Full)** trên 3 track mục tiêu (tuyệt đối không tune lại tham số ở pha này).
+- **Bộ nền cố định (chốt `2026-11-26`):** Cả `Baseline` lẫn `Ours` dùng chung bộ mặc định GitHub gốc: `--box_threshold 0.20 --text_threshold 0.15 --sses_start_percentile 80 --github_sses_inversion --single_instance_mode paper` *(Ours bật thêm các module cải tiến thắng cuộc từ Pha 3)*.
 - **Trạng thái:** `PENDING` (chờ Pha 3)
 
 ---
 
-## 3 Domain chính
+## Các Track đánh giá
 
-| Domain | Dataset (Split) | Số ảnh | Script | Trạng thái |
+| Track / Domain | Dataset (Split) | Số ảnh | Script & Counter (`--fsoc`) | Trạng thái |
 | :--- | :--- | :---: | :--- | :--- |
-| **1. Generic / Natural** | `FSC-147` (`test`) | 1,190 | `countzes_fsc147.py` | ☐ Baseline / ☐ Ours |
-| **2. Aerial / Vehicle** | `CARPK` (`test`) | 459 | `countzes_carpk.py` | ☐ Baseline / ☐ Ours |
-| **3. Microscopy / Cell** | `VGG` + `MBM` | 200 + 44 | `countzes_vgg.py`, `countzes_mbm.py` | ☐ Baseline / ☐ Ours *(kế thừa từ Pha 3)* |
-| *(Tùy chọn)* Dense/Human | `PerSense-D` | — | `countzes_persense_D.py` | ☐ Nếu kịp tải dataset & checkpoint |
+| **1. Generic In-domain** | `FSC-147` (`test`) | 1,190 | `countzes_fsc147.py --fsoc DSALVANet` (`checkpoint_200.pth`) | ☐ Baseline / ☐ Ours |
+| **2. Generic Cross-domain** | `FSC-147` (`test`) | 1,190 | `countzes_fsc147.py --fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/CARPK.pth` | ☐ Baseline / ☐ Ours |
+| **3. Medical / Cell Cross-domain** | `MBM` | 44 | `countzes_mbm.py --fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/FSC147.pth` | ✅ Baseline (`19.5864/37.1069`) / ☐ Ours |
+| *(Tạm gác)* Aerial / Cell / Dense | `CARPK`, `VGG`, `PerSense-D` | — | *Hoãn khỏi phạm vi đợt này* | `DEFERRED` |
 
 ---
 
 ## Checklist thực thi
 
-- [ ] **4.1. Hoàn tất `CARPK test` (459 ảnh, ~2.1h/run)**
-  - Chạy `Baseline (raw)` và `Ours (Full)` trên cùng `countzes_carpk.py` (`--fsoc DSALVANet`, `--stage_samples 15`).
-  - Kiểm tra lại mapping checkpoint `DSALVANet` / `CounTR` cho CARPK theo `countzes_carpk.py`.
-- [ ] **4.2. Hoàn tất `FSC-147 test` (1,190 ảnh, ~5.5h/run)**
-  - Chạy trong `tmux` trên EC2 (`--stage_samples 20 --visualize` để lấy minh họa đại diện 29 classes).
-  - Kiểm tra `Succeeded=1190/1190 | Failed=0`.
-- [ ] **4.3. *(Tùy chọn)* Đối chiếu với `--fsoc countr`**
-  - Nếu có sẵn `CounTR/output_allnew_dir/FSC147.pth`, chạy thêm `Ours` với `--fsoc countr` trên `MBM` hoặc `FSC-147 test` để chứng minh cải tiến **độc lập với backbone counter**.
+- [ ] **4.1. Hoàn tất `FSC-147 test` In-domain (`DSALVANet`, 1,190 ảnh)**
+  - Chạy `Baseline` và `Ours` trong `tmux` (`--stage_samples 20 --visualize`), kiểm tra `Succeeded=1190/1190 | Failed=0`.
+- [ ] **4.2. Hoàn tất `FSC-147 test` Cross-domain (`countr + CARPK.pth`, 1,190 ảnh)**
+  - Chạy `Baseline` và `Ours` với `--countr_ckpt ./CounTR/output_allnew_dir/CARPK.pth`, kiểm tra `Succeeded=1190/1190 | Failed=0`.
+- [ ] **4.3. Hoàn tất `MBM` (`countr + FSC147.pth`, 44 ảnh)**
+  - Đã có `Baseline` (`19.5864 / 37.1069`); chạy `Ours` (`--stage_samples -1 --visualize`) và kiểm tra `Succeeded=44/44 | Failed=0`.
 - [ ] **4.4. Kiểm tra tính nhất quán số liệu**
-  - Đảm bảo bảng kết quả tách rõ 3 cột: **Paper Reported** | **Reproduced Baseline** | **Ours (Full)** — kèm delta MAE, RMSE và thời gian `s/img`.
+  - Đảm bảo bảng kết quả tách rõ 3 cột: **Paper Reported** | **GitHub Baseline** | **Ours (Full)** — kèm delta MAE, RMSE và thời gian `s/img`.

@@ -7,51 +7,65 @@
 
 | ID | Pha / Tài liệu | Trạng thái | Mục tiêu cốt lõi |
 | :--- | :--- | :--- | :--- |
-| `01` | [Sửa bug pipeline & DSALVANet](01-fix-bugs.md) | `VERIFIED_DSALVANET` | P0/P1 & P2 A/B xong (`fix_sses_inversion=True`, `le1` thắng `20.21` MAE); còn `--fsoc countr` nếu dùng CounTR |
-| `02` | [Pha 1: Code đề xuất (SDES, MD-FCE, SMDF)](02-phase1-implement-proposals.md) | `DONE` | Đã code (`a75c9c5`), docs (`61aabf4`) & pass smoke EC2 `5/5` (`57.26s`, VRAM `7.93 GB`) |
-| `03` | [Pha 2: Dev Validation (Batch nhỏ)](03-phase2-dev-validation.md) | `NEXT` | Bước 2A thử độc lập từng module trên `B0` (`val n=58` + `MBM`); Bước 2B cộng dồn 1-thay-đổi/nấc |
-| `04` | [Pha 3: Ablation Study (100% Dataset)](04-phase3-ablation-study.md) | `PENDING` | Chạy bảng Ablation 1-thay-đổi/hàng (`A0 → A5`) trên `MBM` (44) + `VGG` (200) (+ `FSC-147 test`) |
-| `05` | [Pha 4: Benchmark chính (3 Domain)](05-phase4-main-benchmark.md) | `PENDING` | So Baseline vs Ours trên `FSC-147 test`, `CARPK test`, `VGG` + `MBM` |
+| `01` | [Sửa bug pipeline & DSALVANet](01-fix-bugs.md) | `VERIFIED` | P0/P1, P2 A/B (`fix_sses_inversion`) & `--fsoc countr` (`MBM` 44/44) đã verify |
+| `02` | [Pha 1: Code đề xuất (SDES, MD-FCE, SMDF)](02-phase1-implement-proposals.md) | `DONE` | Đã code (`a75c9c5`, `2a93b48`), docs & pass smoke EC2 `5/5` (`11.45s/img`, VRAM `7.93 GB`) |
+| `03` | [Pha 2: Dev Validation (Batch nhỏ)](03-phase2-dev-validation.md) | `DONE` | Đã xong Bước 2A & 2B (`val n=58`). **Chốt `CLIP Fix + SDES` trên `paper`** (`19.52 → 15.07` MAE); loại `le1` & `SMDF`; giữ `MD-FCE g=0` thử thêm trên `VGG`/`MBM` |
+| `04` | [Pha 3: Ablation Study (100% Dataset)](04-phase3-ablation-study.md) | `NEXT` | Chạy bảng Ablation `A0 → A3` (100% dataset) trên `MBM` (44) + `FSC-147 test` (1,190, In-domain & Cross-domain) |
+| `05` | [Pha 4: Benchmark chính (3 Track)](05-phase4-main-benchmark.md) | `PENDING` | So Baseline vs Ours trên `FSC-147 test` (In/Cross-domain) & `MBM` *(tạm gác `CARPK`/`VGG`)* |
 | `06` | [Pha 5: Phân tích & Báo cáo / GDocs](06-phase5-report-and-gdocs.md) | `PENDING` | Tổng hợp số liệu, ảnh `stage_samples`, cập nhật Google Doc & viết báo cáo |
-| `ref` | [EC2 Datasets & Run Cheatsheet](ec2-setup.md) | `ACTIVE_REF` | Lệnh `tmux`, tải `MBM`/`VGG`/`CARPK` lên EC2, `scp` output, nhắc tắt máy |
+| `ref` | [EC2 Datasets & Run Cheatsheet](ec2-setup.md) | `ACTIVE_REF` | Lệnh `tmux`, tải `MBM`/`VGG`/`CARPK` lên EC2, `ec2_idle_stop.sh`, `scp` output |
 
 ---
 
 ## Baseline & Kết quả đã đo (Reference Anchor)
 
-| Nguồn / Run | Dataset (N) | Cài đặt | MAE | RMSE | Tốc độ |
+| Nguồn / Run | Dataset (N) | Cài đặt | MAE ↓ | RMSE ↓ | Tốc độ |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| Paper (báo cáo gốc) | `FSC-147 test` (1190) | DSALVANet in-domain / cross | 15.77 / 21.09 | 91.40 / 110.14 | — |
-| Paper (báo cáo gốc) | `CARPK` (459) / `PerSense-D` | DSALVANet | 7.24 / 12.29 | 9.22 / 28.32 | — |
-| Paper (báo cáo gốc) | `VGG` (200) / `MBM` (44) | DSALVANet | 45.55 / 22.16 | 74.41 / 40.06 | — |
-| Colab (`baseline_vgg_paper`) | `VGG` (200) | `raw`, `fix_sses_inversion=True` | 51.765 | 151.3083 | — |
-| Colab (`baseline_vgg_paper_exact`) | `VGG` (200) | `raw`, `github_sses_inversion` | 69.465 | 89.3219 | — |
-| Colab (`stratified_n29`, seed=42) | `FSC-147 test` (29) | `raw` | 13.4138 | 38.3428 | 15.56s/img |
-| Colab (`stratified_n29`, seed=42) | `FSC-147 test` (29) | `maskclip` + `clip_no_crop` | **11.2069** | **29.9027** | 15.78s/img |
-| EC2 T4 (`ec2_smoke_n5`, seed=42) | `FSC-147 test` (5) | `maskclip` + `clip_no_crop` | 4.2000 | 5.3852 | 16.94s/img |
-| EC2 T4 (`p2_val29`, seed=42) | `FSC-147 val` (29) | `github_inv` vs `paper` vs `unit` vs `le1` | 26.069 / 23.448 / 21.966 / **20.207** | 88.44 / 86.15 / 85.67 / **85.20** | 9.85–13.27s/img |
-| EC2 T4 (`ec2_smoke_all_proposals_n5`) | `FSC-147 val` (5) | `le1` + `maskclip+nocrop` + `sdes+md_fce+smdf` | 8.0000 | 15.3753 | 11.45s/img |
+| Paper (báo cáo gốc) | `FSC-147 test` (1190) | DSALVANet in-domain / CounTR cross | 15.77 / 21.09 | 91.40 / 110.14 | — |
+| Paper (báo cáo gốc) | `CARPK` (459) / `PerSense-D` | DSALVANet / CounTR | 7.24 / 12.29 | 9.22 / 28.32 | — |
+| Paper (báo cáo gốc) | `VGG` (200) / `MBM` (44) | DSALVANet / CounTR | 45.55 / 22.16 | 74.41 / 40.06 | — |
+| Colab (`baseline_vgg_paper`) | `VGG` (200) | `DSALVANet`, `box=0.20`, `pct=80`, `fix_sses_inversion=False` (`1-sim_clip`, GitHub) | 51.765 | 151.3083 | 22.909s/img |
+| Colab (`baseline_vgg_paper_exact`) | `VGG` (200) | `DSALVANet`, `box=0.15`, `pct=90`, `fix_sses_inversion=True` (Paper exact) | 69.465 | 89.3219 | 16.617s/img |
+| Colab (`baseline_mbm_paper`) | `MBM` (44) | `CounTR`, `box=0.15`, `pct=90`, `fix_sses_inversion=True` (Paper exact) | 50.9090 | 71.5297 | 14.825s/img |
+| Colab (`baseline_mbm_github_box015`) | `MBM` (44) | `CounTR`, `box=0.15`, `pct=80`, `fix_sses_inversion=False` (`1-sim_clip`) | 25.0896 | 42.4355 | 16.086s/img |
+| Colab (`baseline_mbm_github`) | `MBM` (44) | `CounTR`, `box=0.20`, `pct=80`, `fix_sses_inversion=False` (`1-sim_clip`, GitHub) | **19.5864** | **37.1069** | 15.607s/img |
+| Colab (`stratified_n29`, seed=42) | `FSC-147 test` (29) | `raw` vs `maskclip+nocrop` | 13.414 / **11.207** | 38.34 / **29.90** | 15.6–15.8s/img |
+| EC2 (`dev_2a_val58_B0`, seed=42) | `FSC-147 val` (58) | `paper`, `raw` (Paper Baseline) | 19.5172 | 63.7565 | 10.334s/img |
+| EC2 (`dev_2a_val58_clip`, seed=42) | `FSC-147 val` (58) | `paper`, `MaskCLIP + No-Crop` | 16.6552 | 61.9828 | 10.482s/img |
+| **EC2 (`dev_2b_val58_paper_clip_sdes`)** | **`FSC-147 val` (58)** | **`paper`, `MaskCLIP + No-Crop + SDES`** | **15.0690** | **61.2122** | **8.915s/img** |
+| EC2 (`dev_2b_val58_paper_clip_sdes_mdfce0`) | `FSC-147 val` (58) | `+ MD-FCE (gamma=0.0)` | 15.1207 | 61.2315 | 8.938s/img |
+| EC2 (`dev_2b_val58_paper_full_g0_085`) | `FSC-147 val` (58) | `+ SMDF (0.05/0.10/0.85)` *(loại)* | 17.6379 | 62.3487 | 8.945s/img |
 
 ---
 
-## Ngân sách Dataset & Thời gian ước lượng (EC2 `g4dn.xlarge` — T4 ~16s/img)
+## Ngân sách Dataset & Thời gian ước lượng (EC2 `g4dn.xlarge` — đo thực tế ~9–10.5s/img)
 
-| Dataset | Số ảnh (Split) | Trên EC2? | ~Thời gian / 1 lượt Full | Vai trò |
+| Dataset / Track | Số ảnh (Split) | Trên EC2? | ~Thời gian / 1 lượt Full | Vai trò |
 | :--- | :---: | :---: | :---: | :--- |
-| `MBM` | 44 | Chưa | ~12 phút | Dev validation + Ablation (Cell) |
-| `FSC-147 val` (`n=58`) | 58 (2/class, seed 42) | Sẵn (`FSC-147`) | ~16 phút | Dev validation (không rò rỉ `test`) |
-| `VGG` | 200 | Chưa | ~55 phút | Full Ablation + Main Benchmark (Cell) |
-| `CARPK test` | 459 | Chưa | ~2.1 giờ | Main Benchmark (Aerial/Vehicle) |
-| `FSC-147 test` | 1,190 | Sẵn (`FSC-147`) | ~5.5 giờ (chưa SDES) | Main Benchmark (Generic) + Ablation mở rộng |
+| `MBM` (`countr` + `FSC147.pth`) | 44 | Cần tải (`gdown`) | ~7 phút | **Active** — Cross-domain Cell |
+| `FSC-147 test` (`DSALVANet`) | 1,190 | Sẵn (`FSC-147`) | ~3.0–3.5 giờ | **Active** — In-domain Generic |
+| `FSC-147 test` (`countr` + `CARPK.pth`) | 1,190 | Cần tải `CARPK.pth` | ~3.0–3.5 giờ | **Active** — Cross-domain Generic |
+| `VGG` (200) / `CARPK test` (459) | 200 / 459 | Chưa | ~33p / ~1.25h | *Tạm gác khỏi đợt test hiện tại* |
+
+---
+
+## Quyết định Baseline & Phạm vi cố định (Chốt `2026-11-26`)
+> Không kiểm chứng thêm giữa Paper vs GitHub; từ Pha 3 trở đi, **mọi thực nghiệm xây và đo trực tiếp trên bộ mặc định GitHub gốc làm nền (`A0`)**:
+> ```text
+> --box_threshold 0.20 --text_threshold 0.15 --sses_start_percentile 80 --github_sses_inversion --single_instance_mode paper --clip_sim_mode raw
+> ```
+> - **3 track đang chạy hiện tại:**
+>   1. `FSC-147 test` In-domain: `--fsoc DSALVANet` (`checkpoint_200.pth`)
+>   2. `FSC-147 test` Cross-domain: `--fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/CARPK.pth`
+>   3. `MBM` Cross-domain: `--fsoc countr --countr_ckpt ./CounTR/output_allnew_dir/FSC147.pth`
+> - *(Tạm gác `VGG`, `CARPK`, `PerSense-D` khỏi đợt chạy hiện tại. Loạt thử nghiệm Pha 2 `dev_2a/2b_val58_*` trước đó được đo trên nền `paper` `0.15 / 90 / fix_sses_inversion=True`.)*
 
 ---
 
 ## Trạng thái hiện tại & Việc làm ngay
 - **Đã xong:**
-  - Sửa `GroundingDINO/bertwarper.py` cho `transformers >= 5.x`; `MaskCLIP + No-Crop` đã cài & thắng `raw` trên `n=29` (`11.21` vs `13.41` MAE).
-  - Setup xong EC2 `g4dn.xlarge` (`/opt/pytorch`, `FSC-147`, `checkpoint_200.pth`) + smoke test `5/5` pass + verify P2 (`le1` MAE `20.2069` vs `paper` `23.4483` vs `github_inv` `26.069`).
-  - Có sẵn telemetry (`summary.json`, `predictions.csv`, `logs/resource_usage.log`, `stage_samples/`) và Google Doc tracker (`1gE2K1dUJH4EObOuoqTOkJ_2LEFZoxi7moINtldBdYrw`).
-  - Pha 1 hoàn tất hoàn toàn: `--sdes`, `--md_fce`, `--smdf` đã commit (`a75c9c5`) & pass smoke EC2 `5/5` (`11.45s/img`, Peak VRAM `7,930.9 MB`).
+  - Sửa bug pipeline + `bertwarper.py` (`transformers >= 5.x`) + telemetry `proposal_diagnostics` (`2a93b48`).
+  - Hoàn tất Pha 1 & Pha 2 (`dev_2a_val58_*`, `dev_2b_val58_*` đều pass `58/58`).
+  - Đã có sẵn Baseline `MBM` trên Colab (`baseline_mbm_github`: `19.5864 / 37.1069`).
 - **Chưa xong / Next:**
-  - Thực hiện **Pha 2 Bước 2A** ([03-phase2-dev-validation.md](03-phase2-dev-validation.md)): chạy 6 run độc lập trên `FSC-147 val` (`n=58`, `seed=42`) đối đầu thẳng `B0` (`paper` + `raw`) + tải `MBM` (44 ảnh).
-  - Chuẩn bị tải `MBM`, `VGG`, `CARPK` lên EC2 theo [ec2-setup.md](ec2-setup.md).
+  - Tải `data/mbm/Images` + `CounTR/output_allnew_dir/{FSC147,CARPK}.pth` lên `gpu-server`, smoke test 1 sample cho 3 track (`FSC-147 In`, `FSC-147 Cross`, `MBM`), rồi chạy Baseline & **Pha 3** ([04-phase3-ablation-study.md](04-phase3-ablation-study.md)).
