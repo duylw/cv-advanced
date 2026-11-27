@@ -3,6 +3,7 @@
 Tài liệu tổng hợp toàn bộ cách chạy, các Colab notebooks, và **đầy đủ CLI options đang có sẵn** trong mã nguồn CountZES.
 
 > **Cập nhật gần nhất:**
+> - Thêm `--sam_msc` (kèm `--sam_msc_area_ratio`, `--sam_msc_min_side_ratio`, `--sam_msc_unit_range`): Cổng Đồng thuận Hình thái Mặt nạ SAM quanh `DGE`, tự kiểm định mật độ đơn vị `[DAE, DGE, FCE]` và tái sử dụng cache SAM ở đầu Stage 3 (`--sam_msc` mặc định `False`, không ảnh hưởng baseline).
 > - Thêm 3 phương pháp cải tiến training-free (`CountZES+`) dạng opt-in trong `countzes_core.py`: `--sdes` (kèm `--sdes_iou_thr`, `--sdes_max_keep`, `--sdes_lambda_iou`, `--sdes_lambda_scale`), `--md_fce` (kèm `--md_fce_gamma`), và `--smdf` (kèm `--smdf_sigma_u`, `--smdf_priors`).
 > - Thêm `--clip_sim_mode {raw,maskclip}` và `--clip_no_crop` trong `countzes_core.py` để sửa lỗi nền của CLIP tầng cuối và lỗi center-crop ảnh chữ nhật.
 > - Thêm `--split {test,val}` trong `countzes_fsc147.py` cùng `--sample_mode {first,stratified,random}`, `--sample_seed`, `--stage_samples -1`, và `per_class_metrics` trong `summary.json`.
@@ -75,6 +76,10 @@ Tài liệu tổng hợp toàn bộ cách chạy, các Colab notebooks, và **đ
 | `--smdf` | `False` | Cờ boolean | Bật **SMDF**: hợp nhất bản đồ mật độ `[Stage 2, Stage 3, Final]` theo độ tự nhất quán đơn vị & KDE. |
 | `--smdf_sigma_u` | `0.5` | Số thực `> 0` | Độ rộng Gaussian quanh `1.0` cho điểm tự nhất quán exemplar trong `--smdf`. |
 | `--smdf_priors` | `0.20 0.25 0.55` | 3 số thực | Trọng số tiên nghiệm `[Stage2_DAE, Stage3_DGE, Final_3Shot]` cho `--smdf`. |
+| `--sam_msc` | `False` | Cờ boolean | Bật **SAM-MSC**: lọc mảnh vụn/tràn gộp quanh `DGE` ở Stage 3, tự kiểm định mật độ đơn vị cuối và tái sử dụng `sam_cache`. |
+| `--sam_msc_area_ratio` | `2.5` | Số thực `>= 1` | Tỷ lệ diện tích tối đa giữa ứng viên Stage 3 và `DGE` trong `--sam_msc`. |
+| `--sam_msc_min_side_ratio` | `0.75` | Số thực `(0, 1]` | Tỷ lệ cạnh ngắn tối thiểu so với cạnh ngắn của `DGE` trong `--sam_msc`. |
+| `--sam_msc_unit_range` | `0.50 2.50` | 2 số thực | Khoảng mật độ đơn vị hợp lệ `[u_min, u_max]` cho trung bình 3 mẫu `[DAE, DGE, FCE]` trước khi fallback về `DGE`. |
 
 ### E. Nhóm Lưu Log, Hình ảnh & Bằng chứng
 | Flag | Mặc định | Giá trị hợp lệ | Chức năng |

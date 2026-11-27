@@ -228,6 +228,32 @@ def build_argument_parser(
         metavar=("W_S2", "W_S3", "W_FINAL"),
         help="Stage prior weights [Stage2_DAE, Stage3_DGE, Final_3Shot] for SMDF.",
     )
+    parser.add_argument(
+        "--sam_msc",
+        action="store_true",
+        default=False,
+        help="Enable SAM Morphological Scale-Consensus & Unit-Consistency Verification (SAM-MSC).",
+    )
+    parser.add_argument(
+        "--sam_msc_area_ratio",
+        type=float,
+        default=2.5,
+        help="Max area ratio relative to DGE reference in SAM-MSC Stage 3 scale gate.",
+    )
+    parser.add_argument(
+        "--sam_msc_min_side_ratio",
+        type=float,
+        default=0.75,
+        help="Min short-side ratio relative to DGE reference in SAM-MSC Stage 3 scale gate.",
+    )
+    parser.add_argument(
+        "--sam_msc_unit_range",
+        type=float,
+        nargs=2,
+        default=[0.50, 2.50],
+        metavar=("U_MIN", "U_MAX"),
+        help="Valid tri-exemplar unit-density self-consistency interval [u_min, u_max] in SAM-MSC.",
+    )
     return parser
 
 
@@ -396,20 +422,12 @@ def _clamp_box_xyxy(box, W: int, H: int) -> Tuple[int, int, int, int]:
     return x0, y0, x1, y1
 
 
-def _compute_sam_sim_up(
+def _similarity_map_from_sam_emb(
     predictor: SamPredictor,
     sam_cache: Tuple,
-    test_image_rgb: np.ndarray,
-    box_xyxy,
+    ex_emb: torch.Tensor,
 ) -> np.ndarray:
-    H, W = test_image_rgb.shape[:2]
-    x0, y0, x1, y1 = _clamp_box_xyxy(box_xyxy, W, H)
-    exemplar = test_image_rgb[y0:y1, x0:x1]
-    predictor.set_image(exemplar)
-    ex_feat = predictor.features.squeeze(0)
-    ex_emb = ex_feat.view(ex_feat.shape[0], -1).mean(1)
-    ex_emb = ex_emb / (ex_emb.norm() + 1e-8)
-
+    """Compute normalized upsampled SAM cosine-similarity map from an exemplar embedding."""
     _restore_sam_cache(predictor, sam_cache)
     full_feat = predictor.features.squeeze(0)
     full_feat = full_feat / (full_feat.norm(dim=0, keepdim=True) + 1e-8)
@@ -430,6 +448,74 @@ def _compute_sam_sim_up(
         .numpy()
     )
     return normalize_sim_map(sim_up)
+
+
+def _compute_sam_sim_up(
+    predictor: SamPredictor,
+    sam_cache: Tuple,
+    test_image_rgb: np.ndarray,
+    box_xyxy,
+) -> np.ndarray:
+    H, W = test_image_rgb.shape[:2]
+    x0, y0, x1, y1 = _clamp_box_xyxy(box_xyxy, W, H)
+    exemplar = test_image_rgb[y0:y1, x0:x1]
+    predictor.set_image(exemplar)
+    ex_feat = predictor.features.squeeze(0)
+    ex_emb = ex_feat.view(ex_feat.shape[0], -1).mean(1)
+    ex_emb = ex_emb / (ex_emb.norm() + 1e-8)
+    return _similarity_map_from_sam_emb(predictor, sam_cache, ex_emb)
+
+
+def _compute_sam_sim_up_cached(
+    predictor: SamPredictor,
+    sam_cache: Tuple,
+    test_image_rgb: np.ndarray,
+    box_xyxy,
+) -> np.ndarray:
+    """Compute SAM similarity map directly from cached full-image SAM features without re-running ViT-H encoder."""
+    H, W = test_image_rgb.shape[:2]
+    x0, y0, x1, y1 = _clamp_box_xyxy(box_xyxy, W, H)
+    _restore_sam_cache(predictor, sam_cache)
+    full_feat = predictor.features.squeeze(0)
+    C, Hf, Wf = full_feat.shape
+    in_h, in_w = predictor.input_size
+    enc_size = float(predictor.model.image_encoder.img_size)
+    scale_h = (in_h / float(H)) * (Hf / enc_size)
+    scale_w = (in_w / float(W)) * (Wf / enc_size)
+    fx0 = max(0, min(Wf - 1, int(round(x0 * scale_w))))
+    fx1 = max(fx0 + 1, min(Wf, int(round(x1 * scale_w))))
+    fy0 = max(0, min(Hf - 1, int(round(y0 * scale_h))))
+    fy1 = max(fy0 + 1, min(Hf, int(round(y1 * scale_h))))
+
+    roi_feat = full_feat[:, fy0:fy1, fx0:fx1]
+    ex_emb = roi_feat.reshape(C, -1).mean(dim=1)
+    ex_emb = ex_emb / (ex_emb.norm() + 1e-8)
+    return _similarity_map_from_sam_emb(predictor, sam_cache, ex_emb)
+
+
+def _sam_msc_filter_stage3_indices(
+    boxes_xyxy: List[List[int]],
+    ref_dge_xyxy: List[int],
+    max_area_ratio: float = 2.5,
+    min_side_ratio: float = 0.75,
+) -> List[int]:
+    """Filter out sub-part micro-fragments and multi-object container masks relative to DGE morphology."""
+    if len(boxes_xyxy) <= 1:
+        return list(range(len(boxes_xyxy)))
+    ref_area = _box_area_xyxy(ref_dge_xyxy)
+    ref_w = max(1, int(ref_dge_xyxy[2]) - int(ref_dge_xyxy[0]))
+    ref_h = max(1, int(ref_dge_xyxy[3]) - int(ref_dge_xyxy[1]))
+    ref_min_side = float(min(ref_w, ref_h))
+
+    valid_indices: List[int] = []
+    for idx, b in enumerate(boxes_xyxy):
+        bw = max(1, int(b[2]) - int(b[0]))
+        bh = max(1, int(b[3]) - int(b[1]))
+        b_area = float(bw * bh)
+        area_ratio = max(b_area, ref_area) / max(1.0, min(b_area, ref_area))
+        if area_ratio <= float(max_area_ratio) and float(min(bw, bh)) >= float(min_side_ratio) * ref_min_side:
+            valid_indices.append(idx)
+    return valid_indices if valid_indices else list(range(len(boxes_xyxy)))
 
 
 def _box_count_from_density(box, density_map: np.ndarray) -> float:
@@ -670,6 +756,7 @@ def _summarize_proposal_diagnostics(records: List[Dict[str, object]]) -> Dict[st
         "ex_unit_final_raw_mean": _mean("ex_unit_final_raw"),
         "smdf_active_count": len(smdf_active),
         "smdf_mean_abs_delta": round(sum(smdf_deltas) / len(smdf_deltas), 4) if smdf_deltas else None,
+        "sam_msc_fallback_count": sum(int(bool(r.get("sam_msc_fallback"))) for r in ok_rows),
     }
 
 
@@ -912,7 +999,12 @@ def run_countzes_on_image(
     dge = [x0, y0, x1, y1]
     dge_box = [[y0, x0, y1, x1]]
 
-    sim_up_dge = _compute_sam_sim_up(predictor, sam_cache, test_image, dge)
+    use_sam_msc = bool(getattr(args, "sam_msc", False))
+    sim_up_dge = (
+        _compute_sam_sim_up_cached(predictor, sam_cache, test_image, dge)
+        if use_sam_msc
+        else _compute_sam_sim_up(predictor, sam_cache, test_image, dge)
+    )
     _, count_stage3, density_pred, density_raw_s3 = _run_counter(
         args.fsoc, counter_model, src_img, image_path, dge_box, filename, device
     )
@@ -957,6 +1049,16 @@ def run_countzes_on_image(
         single2_indices = list(range(len(filtered_boxes)))
     single_instance_boxes = [filtered_boxes[i] for i in single2_indices]
     single_instance_masks = [filtered_masks[i] for i in single2_indices]
+    single2_pre_msc_n = len(single_instance_boxes)
+    if use_sam_msc:
+        msc_idx = _sam_msc_filter_stage3_indices(
+            single_instance_boxes,
+            dge,
+            max_area_ratio=float(getattr(args, "sam_msc_area_ratio", 2.5)),
+            min_side_ratio=float(getattr(args, "sam_msc_min_side_ratio", 0.75)),
+        )
+        single_instance_boxes = [single_instance_boxes[i] for i in msc_idx]
+        single_instance_masks = [single_instance_masks[i] for i in msc_idx]
 
     _restore_sam_cache(predictor, sam_cache)
     full_feat = predictor.features.squeeze(0)
@@ -1081,6 +1183,26 @@ def run_countzes_on_image(
         args.fsoc, counter_model, src_img, image_path, ori_boxes, filename, device
     )
     count = count_final_raw
+    sam_msc_fallback = False
+    if use_sam_msc and density_raw_final is not None:
+        u_bounds = list(getattr(args, "sam_msc_unit_range", [0.50, 2.50]))
+        u_min, u_max = (
+            (float(u_bounds[0]), float(u_bounds[1])) if len(u_bounds) == 2 else (0.50, 2.50)
+        )
+        ex_u_final = float(
+            np.mean([_box_count_from_density(b, density_raw_final) for b in boxes])
+        )
+        dge_area = _box_area_xyxy(dge)
+        dge_is_compact = not (dge_area > 5000.0 and float(pseudo_gt_count) < 25.0)
+        s3_kde_consistent = abs(float(count_stage3) - float(pseudo_gt_count)) <= 0.25 * max(
+            float(pseudo_gt_count), 5.0
+        )
+        if dge_is_compact and (ex_u_final < u_min or ex_u_final > u_max) and s3_kde_consistent:
+            sam_msc_fallback = True
+            count = count_stage3
+            if density_raw_s3 is not None:
+                vis_output = _render_density_overlay_bgr(src_img, [dge], density_raw_s3)
+
     smdf_weights = None
     if bool(getattr(args, "smdf", False)):
         priors = list(getattr(args, "smdf_priors", [0.20, 0.25, 0.55]))
@@ -1125,6 +1247,7 @@ def run_countzes_on_image(
             "sdes": use_sdes,
             "md_fce": use_md_fce,
             "smdf": bool(getattr(args, "smdf", False)),
+            "sam_msc": use_sam_msc,
             "clip_fg_bg_contrast": clip_fg_bg_contrast,
             "dae_in_crop_edge": dae_in_crop_edge,
             "gdino_boxes": detections.xyxy.tolist(),
@@ -1159,6 +1282,8 @@ def run_countzes_on_image(
             "ex_unit_final_raw": ex_unit_final_raw,
             "count_final_raw": count_final_raw,
             "smdf_weights": smdf_weights,
+            "single2_pre_msc_n": single2_pre_msc_n,
+            "sam_msc_fallback": sam_msc_fallback,
             "final_count": count,
         }
 
@@ -1672,7 +1797,11 @@ def save_stage_diagnostic_grid(
     axes[1, 2].imshow(vis_s3b)
     s3_flags = [
         name
-        for name, enabled in (("MD-FCE", dbg.get("md_fce", False)), ("SDES", dbg.get("sdes", False)))
+        for name, enabled in (
+            ("SAM-MSC", dbg.get("sam_msc", False)),
+            ("MD-FCE", dbg.get("md_fce", False)),
+            ("SDES", dbg.get("sdes", False)),
+        )
         if enabled
     ]
     s3_tag = f"[{'+'.join(s3_flags)}] " if s3_flags else ""
@@ -1683,6 +1812,10 @@ def save_stage_diagnostic_grid(
         w_str = "/".join(f"{w:.2f}" for w in dbg["smdf_weights"])
         axes[1, 3].set_title(
             f"Final SMDF [{w_str}] raw={dbg.get('count_final_raw')} -> Pred={pred_count} | GT={gt_count}"
+        )
+    elif dbg.get("sam_msc_fallback", False):
+        axes[1, 3].set_title(
+            f"Final [SAM-MSC -> DGE] raw={dbg.get('count_final_raw')} -> Pred={pred_count} | GT={gt_count}"
         )
     else:
         axes[1, 3].set_title(f"Final [DAE,DGE,FCE] -> Pred={pred_count} | GT={gt_count}")
@@ -1819,6 +1952,7 @@ def run_recorded_evaluation(
                 "sdes": getattr(args, "sdes", False),
                 "md_fce": getattr(args, "md_fce", False),
                 "smdf": getattr(args, "smdf", False),
+                "sam_msc": getattr(args, "sam_msc", False),
             },
         ) as eval_mon:
             for idx, sample in enumerate(tqdm(samples, desc=dataset_name)):
@@ -1867,6 +2001,7 @@ def run_recorded_evaluation(
                     "ex_unit_final_raw": None,
                     "count_final_raw": None,
                     "smdf_weights": None,
+                    "sam_msc_fallback": None,
                 }
                 try:
                     vis_output, count, dbg = run_countzes_on_image(
@@ -1943,6 +2078,7 @@ def run_recorded_evaluation(
                                 if dbg.get("smdf_weights") is not None
                                 else None
                             ),
+                            "sam_msc_fallback": int(bool(dbg.get("sam_msc_fallback", False))),
                         }
                     )
                     del dbg, vis_output
@@ -1998,6 +2134,7 @@ def run_recorded_evaluation(
             "sdes": getattr(args, "sdes", False),
             "md_fce": getattr(args, "md_fce", False),
             "smdf": getattr(args, "smdf", False),
+            "sam_msc": getattr(args, "sam_msc", False),
             "sample_mode": sample_mode,
             "sample_seed": sample_seed,
             "total_available_samples": total_available,

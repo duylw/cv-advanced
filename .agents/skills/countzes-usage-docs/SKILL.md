@@ -91,6 +91,7 @@ Tài liệu Markdown tạo ra nên có đủ 6 phần sau:
   - `--sdes` (default: `False`): Bật SDES (Spatial NMS trước KDE ở Stage 2 + đa dạng hóa `DGE`/`FCE`), kèm `--sdes_iou_thr` (`0.55`), `--sdes_max_keep` (`15`), `--sdes_lambda_iou` (`0.6`), `--sdes_lambda_scale` (`0.15`).
   - `--md_fce` (default: `False`): Bật MD-FCE (Mask- & Density-Attentive Feature Pooling cho Stage 3 FCE), kèm `--md_fce_gamma` (`1.0`).
   - `--smdf` (default: `False`): Bật SMDF (hợp nhất mật độ `[Stage 2, Stage 3, Final]`), kèm `--smdf_sigma_u` (`0.5`), `--smdf_priors` (`[0.20, 0.25, 0.55]`).
+  - `--sam_msc` (default: `False`): Bật SAM-MSC (cổng đồng thuận hình thái SAM quanh `DGE`, tự kiểm định mật độ đơn vị cuối và tái sử dụng `sam_cache`), kèm `--sam_msc_area_ratio` (`2.5`), `--sam_msc_min_side_ratio` (`0.75`), `--sam_msc_unit_range` (`[0.50, 2.50]`).
 - **Visualization & Evidence:**
   - `--visualize` (default: `False`): Lưu ảnh density output cuối vào `outputs/<outdir>/<DATASET>/`.
   - `--stage_samples` (default: `5`): Số ảnh lưu lưới `2x4` từng bước vào `outputs/<outdir>/stage_samples/` (`-1` = lưu toàn bộ mẫu đã chạy, `0` = tắt).
