@@ -19,9 +19,9 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 | Artifact / Dataset | Thư mục đích trên EC2 | Trạng thái | Ghi chú |
 | :--- | :--- | :---: | :--- |
 | `FSC-147` + `DSALVANet` | `data/FSC-147/images_384_VarV2`, `DSALVANet/checkpoints/checkpoint_200.pth` | ✅ Sẵn sàng | **Active** — In-domain (`test=1190`) |
-| `CounTR/CARPK.pth` | `CounTR/output_allnew_dir/CARPK.pth` | ☐ Cần `gdown` | **Active** — `FSC-147` Cross-domain (`1f0yy4pLAdtR7CL1OzMF123wiHgJ8KpPS`) |
-| `MBM` + `CounTR/FSC147.pth` | `data/mbm/Images/blood cells/`, `CounTR/output_allnew_dir/FSC147.pth` | ☐ Cần `gdown` | **Active** — `MBM` 44 ảnh (`1i54Hcw2GbCVp0Kz7jei2Lr7Cmi2DZkol`, `1CzYyiYqLshMdqJ9ZPFJyIzXBa7uFUIYZ`) |
-| `VGG` / `CARPK` | `data/vgg/Images/cells/`, `data/CARPK/` | *Tạm gác* | Chưa chạy ở đợt hiện tại |
+| `MBM` + `CounTR/FSC147.pth` | `data/mbm/Images/blood cells/`, `CounTR/output_allnew_dir/FSC147.pth` | ✅ Sẵn sàng | **Active** — `MBM` 44 ảnh (`1i54Hcw2GbCVp0Kz7jei2Lr7Cmi2DZkol`, `1CzYyiYqLshMdqJ9ZPFJyIzXBa7uFUIYZ`) |
+| `CounTR/CARPK.pth` | `CounTR/output_allnew_dir/CARPK.pth` | ✅ Sẵn sàng | *Đã xong Baseline `FSC-147` Cross (`21.87/112.29`), bỏ chạy tiếp Ours* |
+| `VGG` / `CARPK` | `data/vgg/Images/cells/`, `data/CARPK/` | `VGG` sẵn / `CARPK` chưa | *Tạm gác khỏi đợt hiện tại* |
 
 ---
 

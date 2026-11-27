@@ -20,4 +20,4 @@
   - Dùng skill `countzes-drive-eval-to-doc` + `countzes-proposal-gdocs`.
   - Gỡ tiền tố `[Nháp]` trên các tab đã chứng minh hiệu quả, cập nhật số Ablation & Benchmark mới nhất vào tab `Overview` và từng tab đề xuất, chèn ảnh `stage_samples` mới.
 - [ ] **5.5. Hoàn thiện Báo cáo / Slide thuyết trình**
-  - Cấu trúc gợi ý: (1) Bối cảnh & Bug trong repo gốc → (2) Phân tích 4 điểm nghẽn (CLIP crop/pooling, exemplar trùng vị trí, nền trong FCE, fusion max) → (3) Phương pháp đề xuất (training-free) → (4) Ablation Study (`MBM` + `FSC-147` In/Cross-domain) → (5) Benchmark chính (`FSC-147` In/Cross-domain + `MBM`) & Tài nguyên → (6) Qualitative & Hạn chế.
+  - Cấu trúc gợi ý: (1) Bối cảnh & Bug trong repo gốc → (2) Phân tích 4 điểm nghẽn (CLIP crop/pooling, exemplar trùng vị trí, nền trong FCE, fusion max) → (3) Phương pháp đề xuất (training-free) → (4) Ablation Study (`MBM` + `FSC-147` In-domain) → (5) Benchmark chính (`FSC-147` In-domain + `MBM`, kèm mốc Baseline `FSC-147` Cross-domain) & Tài nguyên → (6) Qualitative & Hạn chế.
